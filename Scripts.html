@@ -1,0 +1,2617 @@
+<script>
+// ============================================================
+// CUADRE DE CAJA — FRONTEND CONTROLLER
+// CON 7 MEJORAS AL MÓDULO DE TAREAS
+// ============================================================
+
+// ── STATE ──
+const App = {
+  token: null,
+  user: null,
+  currentTab: null,
+  theme: 'dark',
+  // MEJORA #4: Cache para búsqueda de tareas
+  tareasCache: [],
+  tareasFiltro: ''
+};
+
+// ── THEME ──
+function initTheme() {
+  const saved = localStorage.getItem('caja_theme') || 'dark';
+  App.theme = saved;
+  applyTheme(saved, false);
+}
+
+function applyTheme(theme, save = true) {
+  App.theme = theme;
+  if (theme === 'light') {
+    document.documentElement.classList.add('light');
+  } else {
+    document.documentElement.classList.remove('light');
+  }
+  if (save) localStorage.setItem('caja_theme', theme);
+  const btn = document.getElementById('btn-theme-toggle');
+  if (btn) btn.textContent = theme === 'dark' ? '☀️' : '🌙';
+}
+
+function toggleTheme() {
+  applyTheme(App.theme === 'dark' ? 'light' : 'dark');
+}
+
+// ── INIT ──
+window.addEventListener('load', () => {
+  initTheme();
+  const stored = sessionStorage.getItem('caja_session');
+  if (stored) {
+    try {
+      const s = JSON.parse(stored);
+      App.token = s.token;
+      App.user = s.user;
+      hideSplash();
+      renderApp();
+      return;
+    } catch(e) { sessionStorage.removeItem('caja_session'); }
+  }
+  setTimeout(hideSplash, 1200);
+});
+
+function hideSplash() {
+  const splash = document.getElementById('splash');
+  const main = document.getElementById('main-container');
+  splash.classList.add('hidden');
+  setTimeout(() => {
+    splash.style.display = 'none';
+    main.style.display = 'block';
+    if (!App.token) renderLogin();
+  }, 500);
+}
+
+// ── GAS CALL WRAPPER ──
+function call(fn, ...args) {
+  function attempt() {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler((result) => {
+          if (result === null || result === undefined) {
+            reject(new Error('__NULL__'));
+          } else {
+            resolve(result);
+          }
+        })
+        .withFailureHandler((err) => {
+          const msg = (err && err.message) ? err.message
+            : (typeof err === 'string') ? err
+            : 'Error del servidor GAS';
+          reject(new Error(msg));
+        })
+        [fn](...args);
+    });
+  }
+
+  return attempt().catch((e) => {
+    if (e.message === '__NULL__') {
+      return new Promise((resolve) => setTimeout(resolve, 1500))
+        .then(() => attempt())
+        .catch(() => {
+          throw new Error('El servidor no respondió. Vuelve a intentar.');
+        });
+    }
+    throw e;
+  });
+}
+
+// ── RENDER HELPERS ──
+function mount(html) {
+  document.getElementById('main-container').innerHTML = html;
+}
+
+function showAlert(msg, type = 'error', containerId = 'alert-box') {
+  const el = document.getElementById(containerId);
+  if (!el) return;
+  el.innerHTML = `<div class="alert alert-${type}">${msg}</div>`;
+}
+
+function setLoading(btnId, loading, label = 'Confirmar') {
+  const btn = document.getElementById(btnId);
+  if (!btn) return;
+  btn.disabled = loading;
+  btn.innerHTML = loading ? `<span class="spinner"></span>` : label;
+}
+
+function formatMoney(n) {
+  const num = Number(n) || 0;
+  return '$' + Math.abs(num).toFixed(2);
+}
+
+function formatMoneyColored(n) {
+  const num = Number(n) || 0;
+  const cls = num >= 0 ? 'cierre-pos' : 'cierre-neg';
+  const sign = num >= 0 ? '+' : '-';
+  return `<span class="${cls}">${sign}$${Math.abs(num).toFixed(2)}</span>`;
+}
+
+function getDotClass(tipo) {
+  const t = (tipo || '').toLowerCase();
+  if (t.includes('efect')) return 'dot-efectivo';
+  if (t.includes('banco') || t.includes('bank')) return 'dot-banco';
+  if (t.includes('venta') || t.includes('app')) return 'dot-venta';
+  return 'dot-otros';
+}
+
+// ── LOGIN ──
+function renderLogin() {
+  mount(`
+    <div class="login-page">
+      <div class="login-card">
+        <div class="login-header">
+          <div class="login-logo" style="background:#FFE500; border-radius:16px; width:72px; height:72px; display:flex; align-items:center; justify-content:center; margin:0 auto 12px;">
+            <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="56" height="56">
+              <path d="M30 50 C30 50 42 42 50 30 C58 42 70 50 70 50 C70 50 58 58 50 70 C42 58 30 50 30 50Z" fill="#1A35C5"/>
+              <path d="M52 25 L60 25 C72 25 80 36 80 50 C80 64 72 75 60 75 L52 75 Z" fill="none" stroke="#1A35C5" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <h1 class="login-title">D'TODOEC</h1>
+          <p class="login-sub">Sistema de control de caja</p>
+        </div>
+        <div id="alert-box"></div>
+        <div class="form-group">
+          <label class="form-label">Usuario</label>
+          <input id="inp-user" class="form-input" type="text" placeholder="nombre de usuario" autocomplete="off" autocapitalize="off">
+        </div>
+        <div class="form-group">
+          <label class="form-label">PIN</label>
+          <input id="inp-pin" class="form-input" type="password" placeholder="••••" maxlength="8" inputmode="numeric">
+        </div>
+        <button id="btn-login" class="btn btn-primary btn-full btn-lg" onclick="doLogin()">Ingresar</button>
+        <p class="text-muted text-sm" style="text-align:center;margin-top:20px;">
+          PIN por defecto admin: <span class="text-accent">1234</span>
+        </p>
+      </div>
+    </div>
+  `);
+  document.getElementById('inp-pin').addEventListener('keydown', e => {
+    if (e.key === 'Enter') doLogin();
+  });
+}
+
+async function doLogin() {
+  const user = document.getElementById('inp-user').value.trim();
+  const pin  = document.getElementById('inp-pin').value.trim();
+  if (!user || !pin) { showAlert('Ingresa usuario y PIN'); return; }
+  setLoading('btn-login', true);
+  try {
+    const res = await call('login', user, pin);
+    if (!res.ok) {
+      showAlert(res.error || 'Error al ingresar');
+      setLoading('btn-login', false, 'Ingresar');
+      return;
+    }
+    App.token = res.token;
+    App.user = res.usuario;
+    sessionStorage.setItem('caja_session', JSON.stringify({ token: res.token, user: res.usuario }));
+    renderApp();
+  } catch(e) {
+    showAlert('Error de conexión. Intenta de nuevo.');
+    setLoading('btn-login', false, 'Ingresar');
+  }
+}
+
+async function doLogout() {
+  try { await call('logout', App.token); } catch(e) {}
+  App.token = null;
+  App.user = null;
+  sessionStorage.removeItem('caja_session');
+  renderLogin();
+}
+
+// ── CAMBIAR PIN PROPIO ──
+function showCambiarPinPropio() {
+  showModal('Cambiar mi PIN', `
+    <div id="alert-modal"></div>
+    <div class="form-group">
+      <label class="form-label">PIN actual</label>
+      <input id="pin-actual" class="form-input" type="password" placeholder="••••" maxlength="8" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Nuevo PIN</label>
+      <input id="pin-nuevo" class="form-input" type="password" placeholder="••••" maxlength="8" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Confirmar nuevo PIN</label>
+      <input id="pin-confirmar" class="form-input" type="password" placeholder="••••" maxlength="8" inputmode="numeric">
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-save-pin" class="btn btn-primary" onclick="doGuardarPinPropio()">Guardar PIN</button>
+  `);
+}
+
+async function doGuardarPinPropio() {
+  const actual    = document.getElementById('pin-actual').value.trim();
+  const nuevo     = document.getElementById('pin-nuevo').value.trim();
+  const confirmar = document.getElementById('pin-confirmar').value.trim();
+  if (!actual || !nuevo || !confirmar) { showAlert('Completa todos los campos', 'error', 'alert-modal'); return; }
+  if (nuevo !== confirmar) { showAlert('Los PINs nuevos no coinciden', 'error', 'alert-modal'); return; }
+  if (nuevo.length < 4) { showAlert('El PIN debe tener al menos 4 dígitos', 'error', 'alert-modal'); return; }
+  setLoading('btn-save-pin', true);
+  try {
+    const check = await call('login', App.user.usuario, actual);
+    if (!check.ok) {
+      showAlert('El PIN actual es incorrecto', 'error', 'alert-modal');
+      setLoading('btn-save-pin', false, 'Guardar PIN');
+      return;
+    }
+    const res = await call('cambiarPin', App.token, App.user.id, nuevo);
+    if (!res.ok) throw new Error(res.error);
+    closeModal();
+    const nb = document.querySelector('.navbar-name');
+    if (nb) {
+      const orig = nb.textContent;
+      nb.textContent = '✅ PIN actualizado';
+      nb.style.color = 'var(--accent)';
+      setTimeout(() => { nb.textContent = orig; nb.style.color = ''; }, 2500);
+    }
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-save-pin', false, 'Guardar PIN');
+  }
+}
+
+// ── APP SHELL ──
+function renderApp() {
+  const isAdmin = App.user.rol === 'admin';
+  document.getElementById('main-container').innerHTML = `
+    <div class="app-layout">
+      <nav class="navbar">
+        <div class="navbar-brand">
+          <div class="navbar-logo" style="background:transparent; padding:0; overflow:visible; width:44px; height:44px; border-radius:8px; display:flex; align-items:center; justify-content:center;">
+            <svg viewBox="0 0 100 100" xmlns="http://www.w3.org/2000/svg" width="44" height="44" style="border-radius:8px;">
+              <rect width="100" height="100" fill="#FFE500" rx="8"/>
+              <path d="M30 50 C30 50 42 42 50 30 C58 42 70 50 70 50 C70 50 58 58 50 70 C42 58 30 50 30 50Z" fill="#1A35C5"/>
+              <path d="M52 25 L60 25 C72 25 80 36 80 50 C80 64 72 75 60 75 L52 75 Z" fill="none" stroke="#1A35C5" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </div>
+          <div style="display:flex; flex-direction:column; line-height:1.1;">
+            <span class="navbar-title" style="font-size:13px; letter-spacing:0.5px;">D'TODOEC</span>
+          </div>
+        </div>
+        <div class="navbar-user">
+          <div class="navbar-info">
+            <div class="navbar-name">${App.user.nombre}</div>
+            <div class="navbar-role">${isAdmin ? 'Administrador' : App.user.rol === 'disenador' ? 'Diseñador' : 'Cajero'}</div>
+          </div>
+          <button id="btn-theme-toggle" class="btn-theme" onclick="toggleTheme()" title="Cambiar tema">
+            ${App.theme === 'dark' ? '☀️' : '🌙'}
+          </button>
+          <button class="btn btn-secondary btn-sm" onclick="showCambiarPinPropio()" title="Cambiar mi PIN">🔑 PIN</button>
+          <button class="btn-logout" onclick="doLogout()">Salir</button>
+        </div>
+      </nav>
+      <div class="main-content" id="page-content"></div>
+    </div>
+  `;
+  if (isAdmin) renderAdminDashboard();
+  else if (App.user.rol === 'disenador') renderDisenadorHome();
+  else renderCajeroHome();
+}
+
+// ============================================================
+// VISTA CAJERO
+// ============================================================
+
+function _periodoLocal() {
+  const now = new Date();
+  const dia = now.getDate();
+  const mes = String(now.getMonth() + 1).padStart(2, '0');
+  const año = now.getFullYear();
+  return `${año}-${mes}-${dia <= 15 ? 'Q1' : 'Q2'}`;
+}
+
+function _fechaLocal() {
+  const now = new Date();
+  return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}-${String(now.getDate()).padStart(2,'0')}`;
+}
+
+function renderCajeroHome() {
+  const pc = document.getElementById('page-content');
+  const periodo = _periodoLocal();
+  const hoyLocal = _fechaLocal();
+
+  pc.innerHTML = `
+    <div class="periodo-banner">
+      📅 Periodo activo: <strong>${periodo}</strong> &nbsp;·&nbsp; <span id="cajero-hoy">${hoyLocal}</span>
+    </div>
+    <div class="stats-grid">
+      <div class="stat-card">
+        <div class="stat-label">Estado hoy</div>
+        <div id="cajero-estado" style="margin-top:8px;">
+          <span class="badge badge-pending">Verificando...</span>
+        </div>
+        <div class="stat-sub" id="cajero-fecha">${hoyLocal}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Ganancia del periodo</div>
+        <div id="cajero-ganancia" class="stat-value accent">—</div>
+        <div class="stat-sub">${periodo}</div>
+      </div>
+      <div class="stat-card">
+        <div class="stat-label">Recursos asignados</div>
+        <div id="cajero-n-recursos" class="stat-value">—</div>
+        <div class="stat-sub">activos</div>
+      </div>
+    </div>
+    <div id="alert-box-cajero"></div>
+    <div id="cajero-acciones">
+      <div class="card">
+        <div style="display:flex;align-items:center;gap:12px;padding:8px 0;">
+          <div class="spinner" style="width:18px;height:18px;border-width:2px;"></div>
+          <span class="text-muted text-sm">Conectando con el servidor...</span>
+        </div>
+      </div>
+    </div>
+    <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap;" id="cajero-extra-btns">
+      <button class="btn btn-warn" onclick="showRegistrarEgreso()" style="flex:1;min-width:140px;">💸 Registrar Egreso</button>
+      <button class="btn btn-secondary" onclick="showRegistrarTransferencia()" style="flex:1;min-width:140px;">🔄 Transferencia</button>
+      <button class="btn btn-secondary" onclick="showTransferenciasPendientes()" style="flex:1;min-width:140px;">📥 Trans. Pendientes</button>
+    </div>
+    <div style="margin-top:24px;">
+      <div class="section-header">
+        <div>
+          <div class="section-title">📋 Mis Tareas</div>
+          <div class="section-sub">Gestión de trabajos</div>
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="renderTareasCajero()">Ver todas →</button>
+      </div>
+    </div>
+    <div style="margin-top:24px;">
+      <div class="section-header">
+        <div>
+          <div class="section-title">Historial</div>
+          <div class="section-sub">Últimos cierres registrados</div>
+        </div>
+      </div>
+      <div id="historial-cajero"><div class="loading"><div class="spinner"></div></div></div>
+    </div>
+  `;
+
+  _loadCajeroDatos();
+  loadHistorialCajero();
+}
+
+async function _loadCajeroDatos() {
+  let pingOk = false;
+  try {
+    const p = await call('ping', App.token);
+    pingOk = !!(p && p.ok);
+  } catch(e) { pingOk = false; }
+
+  if (!pingOk) {
+    _cajeroAccionesError('No hay conexión con el servidor GAS.', 'Verifica que el script esté desplegado correctamente.');
+    return;
+  }
+
+  let estadoRes = null, recursosRes = null, estadoError = null;
+  try { estadoRes = await call('obtenerEstadoHoy', App.token); } catch(e) { estadoError = e.message; }
+  try { recursosRes = await call('obtenerRecursosDeUsuario', App.token, App.user.id); } catch(e) {}
+
+  if (!estadoRes || !estadoRes.ok) {
+    _cajeroAccionesError('Error al obtener estado de caja', estadoRes?.error || estadoError || 'Error desconocido');
+    return;
+  }
+
+  const { hoy, periodo, tieneApertura, tieneCierre, ultimosCierres } = estadoRes;
+  const recursos = recursosRes?.recursos || [];
+
+  const hoyEl = document.getElementById('cajero-hoy');
+  const fechaEl = document.getElementById('cajero-fecha');
+  if (hoyEl) hoyEl.textContent = hoy;
+  if (fechaEl) fechaEl.textContent = hoy;
+
+  const estadoEl = document.getElementById('cajero-estado');
+  if (estadoEl) {
+    estadoEl.innerHTML = tieneCierre
+      ? `<span class="badge badge-closed">Cerrado</span>`
+      : tieneApertura
+        ? `<span class="badge badge-open">Caja Abierta</span>`
+        : `<span class="badge badge-pending">Sin Apertura</span>`;
+  }
+
+  const nRecEl = document.getElementById('cajero-n-recursos');
+  if (nRecEl) nRecEl.textContent = recursos.length;
+
+  const accionesEl = document.getElementById('cajero-acciones');
+  if (accionesEl) {
+    accionesEl.innerHTML = !tieneApertura
+      ? renderBtnApertura()
+      : !tieneCierre
+        ? renderBtnCierre()
+        : renderDiaCompleto();
+  }
+
+  window._cajeroData = { recursos, ultimosCierres, tieneApertura, hoy };
+
+  try {
+    const ganRes = await call('obtenerGananciasAcumuladasUsuario', App.token);
+    if (ganRes && ganRes.ok && Array.isArray(ganRes.ganancias)) {
+      const total = ganRes.ganancias.reduce((a, g) => a + (g.gananciaAcumulada || 0), 0);
+      const ganEl = document.getElementById('cajero-ganancia');
+      if (ganEl) {
+        ganEl.className = `stat-value ${total >= 0 ? 'accent' : 'danger'}`;
+        ganEl.textContent = formatMoney(total);
+      }
+    }
+  } catch(e) {}
+}
+
+function _cajeroAccionesError(titulo, detalle) {
+  const el = document.getElementById('cajero-acciones');
+  if (!el) return;
+  el.innerHTML = `
+    <div class="card">
+      <div class="card-title mb-8">⚠️ ${titulo}</div>
+      <p class="text-muted text-sm mb-16">${detalle}</p>
+      <button class="btn btn-primary btn-sm" onclick="_loadCajeroDatos()">↻ Reintentar</button>
+    </div>
+  `;
+  const estadoEl = document.getElementById('cajero-estado');
+  if (estadoEl) estadoEl.innerHTML = `<span class="badge badge-pending">Sin datos</span>`;
+}
+
+function renderBtnApertura() {
+  return `
+    <div class="card">
+      <div class="card-header"><div class="card-title">Apertura de Caja</div></div>
+      <p class="text-muted text-sm mb-16">Registra el saldo inicial de cada recurso al comenzar el día.</p>
+      <button class="btn btn-primary" onclick="showAperturaForm()">🔓 Registrar Apertura</button>
+    </div>
+  `;
+}
+
+function renderBtnCierre() {
+  return `
+    <div class="card">
+      <div class="card-header"><div class="card-title">Cierre de Caja</div></div>
+      <p class="text-muted text-sm mb-16">Registra el saldo final de cada recurso al terminar el día.</p>
+      <button class="btn btn-warn" onclick="showCierreForm()">🔒 Registrar Cierre</button>
+    </div>
+  `;
+}
+
+function renderDiaCompleto() {
+  return `
+    <div class="card">
+      <div class="card-header"><div class="card-title">✅ Día completado</div></div>
+      <p class="text-muted text-sm">La apertura y el cierre de hoy han sido registrados.</p>
+    </div>
+  `;
+}
+
+async function loadHistorialCajero() {
+  try {
+    const res = await call('obtenerHistorialUsuario', App.token, 15);
+    const el = document.getElementById('historial-cajero');
+    if (!el) return;
+    if (!res.ok || !res.registros.length) {
+      el.innerHTML = `<div class="empty"><div class="empty-icon">📋</div>Sin registros aún</div>`;
+      return;
+    }
+    const rows = res.registros.map(r => `
+      <tr>
+        <td>${r.fecha}</td>
+        <td>${r.recursoNombre}</td>
+        <td class="mono">${formatMoney(r.valor)}</td>
+        <td><span class="badge badge-closed">${r.periodo}</span></td>
+      </tr>
+    `).join('');
+    el.innerHTML = `
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Fecha</th><th>Recurso</th><th>Cierre</th><th>Periodo</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+      </div>
+    `;
+  } catch(e) {
+    const el = document.getElementById('historial-cajero');
+    if (el) el.innerHTML = `<div class="alert alert-error">Error cargando historial</div>`;
+  }
+}
+
+// ── APERTURA MODAL ──
+function showAperturaForm() {
+  const { recursos, ultimosCierres } = window._cajeroData;
+  if (!recursos.length) {
+    showAlert('No tienes recursos asignados. Contacta al administrador.', 'warn', 'alert-box-cajero');
+    return;
+  }
+  const inputs = recursos.map(r => {
+    const ref = ultimosCierres[r.id];
+    const refText = ref ? `Último cierre: ${formatMoney(ref.ultimoValor)} (${ref.ultimaFecha})` : 'Sin registro previo';
+    return `
+      <div class="resource-row">
+        <div>
+          <div class="resource-name">
+            <span class="resource-type-dot ${getDotClass(r.tipo)}"></span>
+            ${r.nombre}
+          </div>
+          <div class="resource-ref">${refText}</div>
+        </div>
+        <input class="resource-input" type="number" step="0.01" min="0" placeholder="0.00"
+          id="apertura_${r.id}" data-recurso-id="${r.id}" data-recurso-nombre="${r.nombre}">
+      </div>
+    `;
+  }).join('');
+
+  showModal('Apertura de Caja', `
+    <p class="text-muted text-sm mb-16">Ingresa el saldo que tienes ahora mismo en cada recurso.</p>
+    <div class="resource-grid">${inputs}</div>
+    <div id="alert-modal"></div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-confirm-apertura" class="btn btn-primary" onclick="doApertura()">Confirmar Apertura</button>
+  `);
+}
+
+async function doApertura() {
+  const { recursos } = window._cajeroData;
+  const valores = [];
+  for (const r of recursos) {
+    const inp = document.getElementById(`apertura_${r.id}`);
+    const val = parseFloat(inp?.value);
+    if (isNaN(val) || val < 0) {
+      showAlert(`Ingresa un valor válido para: ${r.nombre}`, 'error', 'alert-modal');
+      return;
+    }
+    valores.push({ recursoId: r.id, recursoNombre: r.nombre, valor: val });
+  }
+  setLoading('btn-confirm-apertura', true);
+  try {
+    const res = await call('registrarApertura', App.token, valores);
+    if (!res.ok) throw new Error(res.error);
+    closeModal();
+    renderCajeroHome();
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-confirm-apertura', false, 'Confirmar Apertura');
+  }
+}
+
+// ── CIERRE MODAL ──
+async function showCierreForm() {
+  const { recursos, ultimosCierres } = window._cajeroData;
+  if (!recursos.length) {
+    showAlert('No tienes recursos asignados.', 'warn', 'alert-box-cajero');
+    return;
+  }
+  showModal('Cierre de Caja', `
+    <div class="loading"><div class="spinner"></div> Cargando datos de apertura...</div>
+    <div id="alert-modal"></div>
+  `, `<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>`);
+
+  const hoy = window._cajeroData.hoy;
+  let aperturasMap = {};
+  try {
+    const histRes = await call('obtenerDetalleRegistros', App.token, { fecha: hoy, tipo: 'apertura' });
+    if (histRes && histRes.ok && Array.isArray(histRes.registros)) {
+      histRes.registros.forEach(r => { aperturasMap[r.recursoNombre] = Number(r.valor) || 0; });
+    }
+  } catch(e) { console.warn('No se pudieron cargar aperturas:', e); }
+
+  recursos.forEach(r => {
+    if (aperturasMap[r.nombre] === undefined) {
+      const ref = ultimosCierres[r.id];
+      aperturasMap[r.nombre] = ref ? Number(ref.ultimoValor) || 0 : 0;
+    }
+  });
+
+  const inputs = recursos.map(r => {
+    const valApertura = aperturasMap[r.nombre] ?? 0;
+    return `
+      <div class="resource-row">
+        <div>
+          <div class="resource-name">
+            <span class="resource-type-dot ${getDotClass(r.tipo)}"></span>
+            ${r.nombre}
+          </div>
+          <div class="resource-ref">Apertura hoy: <strong>${formatMoney(valApertura)}</strong></div>
+        </div>
+        <input class="resource-input" type="number" step="0.01" min="0" placeholder="0.00"
+          id="cierre_${r.id}" data-recurso-id="${r.id}" data-recurso-nombre="${r.nombre}" data-apertura="${valApertura}">
+      </div>
+    `;
+  }).join('');
+
+  const modalEl = document.querySelector('.modal');
+  if (!modalEl) return;
+  const bodyDiv = modalEl.querySelectorAll('div')[1];
+  if (bodyDiv) {
+    bodyDiv.innerHTML = `
+      <p class="text-muted text-sm mb-16">Ingresa el saldo actual al finalizar el día.</p>
+      <div class="resource-grid">${inputs}</div>
+      <div id="cierre-preview"></div>
+      <div id="alert-modal"></div>
+    `;
+  }
+  const footerEl = document.querySelector('.modal-footer');
+  if (footerEl) {
+    footerEl.innerHTML = `
+      <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+      <button id="btn-confirm-cierre" class="btn btn-warn" onclick="doCierre()">Confirmar Cierre</button>
+    `;
+  }
+  recursos.forEach(r => {
+    const inp = document.getElementById(`cierre_${r.id}`);
+    if (inp) inp.addEventListener('input', updateCierrePreview);
+  });
+}
+
+function updateCierrePreview() {
+  const inputs = document.querySelectorAll('[id^="cierre_"]');
+  if (!inputs.length) return;
+  let totalGanancia = 0, allFilled = true;
+  const rows = [];
+  inputs.forEach(inp => {
+    const apertura = parseFloat(inp.dataset.apertura) || 0;
+    const cierre = parseFloat(inp.value);
+    if (isNaN(cierre)) { allFilled = false; return; }
+    const ganancia = cierre - apertura;
+    totalGanancia += ganancia;
+    rows.push({ nombre: inp.dataset.recursoNombre, apertura, cierre, ganancia });
+  });
+  if (!allFilled || !rows.length) {
+    document.getElementById('cierre-preview').innerHTML = '';
+    return;
+  }
+  const detalles = rows.map(r => `
+    <div class="cierre-row">
+      <span class="cierre-label">${r.nombre}</span>
+      <span class="cierre-val">${formatMoney(r.apertura)} → ${formatMoney(r.cierre)} &nbsp; ${formatMoneyColored(r.ganancia)}</span>
+    </div>
+  `).join('');
+  const totalClass = totalGanancia >= 0 ? 'cierre-pos' : 'cierre-neg';
+  const sign = totalGanancia >= 0 ? '+' : '';
+  document.getElementById('cierre-preview').innerHTML = `
+    <div class="cierre-result">
+      ${detalles}
+      <div class="cierre-total">
+        <span class="cierre-total-label">Ganancia del día</span>
+        <span class="cierre-total-val ${totalClass}">${sign}${formatMoney(totalGanancia)}</span>
+      </div>
+    </div>
+  `;
+}
+
+async function doCierre() {
+  const inputs = document.querySelectorAll('[id^="cierre_"]');
+  const valores = [];
+  for (const inp of inputs) {
+    const apertura = parseFloat(inp.dataset.apertura) || 0;
+    const cierre = parseFloat(inp.value);
+    if (isNaN(cierre) || cierre < 0) {
+      showAlert(`Ingresa un valor válido para: ${inp.dataset.recursoNombre}`, 'error', 'alert-modal');
+      return;
+    }
+    valores.push({
+      recursoId: inp.dataset.recursoId,
+      recursoNombre: inp.dataset.recursoNombre,
+      valorApertura: apertura,
+      valorCierre: cierre
+    });
+  }
+  if (!valores.length) { showAlert('No hay recursos para cerrar', 'error', 'alert-modal'); return; }
+  setLoading('btn-confirm-cierre', true);
+  try {
+    const res = await call('registrarCierre', App.token, valores);
+    if (!res) throw new Error('No se recibió respuesta del servidor.');
+    if (!res.ok) throw new Error(res.error || 'Error al registrar el cierre');
+    closeModal();
+    renderCajeroHome();
+  } catch(e) {
+    showAlert(e.message || 'Error desconocido.', 'error', 'alert-modal');
+    setLoading('btn-confirm-cierre', false, 'Confirmar Cierre');
+  }
+}
+
+// ============================================================
+// VISTA ADMIN — MEJORA #6: Stats de tareas en dashboard
+// ============================================================
+
+async function renderAdminDashboard() {
+  const pc = document.getElementById('page-content');
+  pc.innerHTML = `<div class="loading"><div class="spinner"></div> Cargando dashboard...</div>`;
+
+  try {
+    // Cargar dashboard + stats de tareas en paralelo
+    const [res, tareasStats] = await Promise.all([
+      call('obtenerDashboardAdmin', App.token),
+      call('obtenerEstadisticasTareas', App.token).catch(() => ({ ok: false }))
+    ]);
+    
+    if (!res.ok) throw new Error(res.error);
+
+    const { estadoUsuarios, resumenLocales, gananciaGlobalHoy, gananciaGlobalPeriodo, hoy, periodo } = res;
+    const stats = tareasStats.ok ? tareasStats.stats : null;
+
+    const abiertos = estadoUsuarios.filter(u => u.estado === 'abierto').length;
+    const cerrados = estadoUsuarios.filter(u => u.estado === 'cerrado').length;
+    const sinApertura = estadoUsuarios.filter(u => u.estado === 'sin_apertura').length;
+
+    // MEJORA #6: Cards de estadísticas de tareas
+    const tareasCardsHTML = stats ? `
+      <div class="stat-card" style="border-left:3px solid #7c6af8;">
+        <div class="stat-label">📋 Tareas activas</div>
+        <div class="stat-value">${stats.total}</div>
+        <div class="stat-sub">
+          ${stats.porEstado.cotizacion} cotiz · ${stats.porEstado.en_proceso} proceso · ${stats.porEstado.terminado} termin
+        </div>
+      </div>
+      <div class="stat-card ${stats.vencidas > 0 ? 'danger-card' : ''}" style="border-left:3px solid ${stats.vencidas > 0 ? '#ef4444' : '#f5a623'};">
+        <div class="stat-label">⏰ Fechas</div>
+        <div class="stat-value ${stats.vencidas > 0 ? 'danger' : ''}">${stats.vencidas > 0 ? stats.vencidas + ' vencidas' : stats.porVencer + ' próximas'}</div>
+        <div class="stat-sub">${stats.vencidas > 0 ? stats.porVencer + ' por vencer (3d)' : 'en los próximos 3 días'}</div>
+      </div>
+      <div class="stat-card" style="border-left:3px solid #00b892;">
+        <div class="stat-label">💰 Pendiente cobro</div>
+        <div class="stat-value accent">${formatMoney(stats.totalPendienteCobro)}</div>
+        <div class="stat-sub">saldo de tareas</div>
+      </div>
+    ` : '';
+
+    pc.innerHTML = `
+      <div class="periodo-banner">
+        📅 Periodo activo: <strong>${periodo}</strong> &nbsp;·&nbsp; ${hoy}
+      </div>
+
+      <div class="tabs" id="admin-tabs">
+        <button class="tab active" onclick="adminTab('dashboard')">Dashboard</button>
+        <button class="tab" onclick="adminTab('tareas')">Tareas</button>
+        <button class="tab" onclick="adminTab('usuarios')">Usuarios</button>
+        <button class="tab" onclick="adminTab('locales')">Locales</button>
+        <button class="tab" onclick="adminTab('recursos')">Recursos</button>
+        <button class="tab" onclick="adminTab('cierre')">Cierre Quincenal</button>
+        <button class="tab" onclick="adminTab('historial')">Historial</button>
+        <button class="tab" id="tab-btn-egresos" onclick="adminTab('egresos')">⚡ Egresos</button>
+        <button class="tab" onclick="adminTab('transferencias')">🔄 Transferencias</button>
+        <button class="tab" onclick="adminTab('deudas')">📋 Deudas</button>
+      </div>
+
+      <div id="admin-tab-content">
+        <div id="tab-dashboard">
+          <div class="stats-grid">
+            <div class="stat-card">
+              <div class="stat-label">Ganancia hoy</div>
+              <div class="stat-value ${gananciaGlobalHoy >= 0 ? 'accent' : 'danger'}">${formatMoney(gananciaGlobalHoy)}</div>
+              <div class="stat-sub">todos los locales</div>
+            </div>
+            <div class="stat-card purple">
+              <div class="stat-label">Ganancia del periodo</div>
+              <div class="stat-value">${formatMoney(gananciaGlobalPeriodo)}</div>
+              <div class="stat-sub">${periodo}</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Cajas abiertas</div>
+              <div class="stat-value accent">${abiertos}</div>
+              <div class="stat-sub">${cerrados} cerradas · ${sinApertura} pendientes</div>
+            </div>
+            <div class="stat-card">
+              <div class="stat-label">Locales activos</div>
+              <div class="stat-value">${resumenLocales.length}</div>
+            </div>
+            ${tareasCardsHTML}
+          </div>
+
+          <div class="section-header mt-16">
+            <div class="section-title">Resumen por Local</div>
+          </div>
+          <div class="table-wrapper mb-16">
+            <table>
+              <thead><tr>
+                <th>Local</th><th>Usuarios</th><th>Abiertas</th><th>Cerradas</th>
+                <th>Hoy</th><th>Periodo</th>
+              </tr></thead>
+              <tbody>
+                ${resumenLocales.map(l => `
+                  <tr>
+                    <td><strong>${l.nombre}</strong></td>
+                    <td>${l.usuariosActivos}</td>
+                    <td><span class="badge badge-open">${l.cajasAbiertas}</span></td>
+                    <td><span class="badge badge-closed">${l.cajasCerradas}</span></td>
+                    <td class="mono accent">${formatMoney(l.totalHoy)}</td>
+                    <td class="mono">${formatMoney(l.totalPeriodo)}</td>
+                  </tr>
+                `).join('')}
+              </tbody>
+            </table>
+          </div>
+
+          <div class="section-header">
+            <div class="section-title">Estado de Cajeros</div>
+          </div>
+          <div class="user-cards">
+            ${estadoUsuarios.map(u => {
+              const badge = u.estado === 'abierto'
+                ? `<span class="badge badge-open">Abierto</span>`
+                : u.estado === 'cerrado'
+                  ? `<span class="badge badge-closed">Cerrado</span>`
+                  : `<span class="badge badge-pending">Sin apertura</span>`;
+              return `
+                <div class="user-card">
+                  <div class="user-avatar">👤</div>
+                  <div class="user-card-info">
+                    <div class="user-card-name">${u.nombre} &nbsp; ${badge}</div>
+                    <div class="user-card-local">${u.localNombre}</div>
+                  </div>
+                  <div class="user-card-stats">
+                    <div class="user-card-day">${formatMoney(u.gananciaDia)}</div>
+                    <div class="user-card-period">periodo: ${formatMoney(u.gananciaPeriodo)}</div>
+                  </div>
+                </div>
+              `;
+            }).join('')}
+          </div>
+        </div>
+
+        <div id="tab-tareas" style="display:none;"></div>
+        <div id="tab-usuarios" style="display:none;"></div>
+        <div id="tab-locales" style="display:none;"></div>
+        <div id="tab-recursos" style="display:none;"></div>
+        <div id="tab-cierre" style="display:none;"></div>
+        <div id="tab-historial" style="display:none;"></div>
+        <div id="tab-egresos" style="display:none;"></div>
+        <div id="tab-transferencias" style="display:none;"></div>
+        <div id="tab-deudas" style="display:none;"></div>
+      </div>
+    `;
+
+    App.currentTab = 'dashboard';
+
+  } catch(e) {
+    pc.innerHTML = `<div class="alert alert-error">Error: ${e.message}</div>`;
+  }
+}
+
+function adminTab(tab) {
+  document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  ['dashboard','tareas','usuarios','locales','recursos','cierre','historial','egresos','transferencias','deudas'].forEach(t => {
+    const el = document.getElementById(`tab-${t}`);
+    if (el) el.style.display = 'none';
+  });
+  const el = document.getElementById(`tab-${tab}`);
+  if (el) el.style.display = 'block';
+  App.currentTab = tab;
+
+  if (tab === 'tareas' && !el.dataset.loaded) { loadTabTareas(); el.dataset.loaded = '1'; }
+  if (tab === 'usuarios' && !el.dataset.loaded) { loadTabUsuarios(); el.dataset.loaded = '1'; }
+  if (tab === 'locales' && !el.dataset.loaded) { loadTabLocales(); el.dataset.loaded = '1'; }
+  if (tab === 'recursos' && !el.dataset.loaded) { loadTabRecursos(); el.dataset.loaded = '1'; }
+  if (tab === 'cierre' && !el.dataset.loaded) { loadTabCierre(); el.dataset.loaded = '1'; }
+  if (tab === 'historial' && !el.dataset.loaded) { loadTabHistorial(); el.dataset.loaded = '1'; }
+  if (tab === 'egresos' && !el.dataset.loaded) { loadTabEgresos(); el.dataset.loaded = '1'; }
+  if (tab === 'transferencias' && !el.dataset.loaded) { loadTabTransferencias(); el.dataset.loaded = '1'; }
+  if (tab === 'deudas' && !el.dataset.loaded) { loadTabDeudas(); el.dataset.loaded = '1'; }
+}
+
+// ── TAB USUARIOS ──
+async function loadTabUsuarios() {
+  const el = document.getElementById('tab-usuarios');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const [usRes, locRes] = await Promise.all([
+      call('obtenerUsuarios', App.token),
+      call('obtenerLocales', App.token)
+    ]);
+    const usuarios = usRes.usuarios || [];
+    const locales = locRes.locales || [];
+    const locSelect = locales.map(l => `<option value="${l.id}">${l.nombre}</option>`).join('');
+
+    el.innerHTML = `
+      <div class="card mb-16">
+        <div class="card-header"><div class="card-title">Crear Cajero</div></div>
+        <div id="alert-usuarios"></div>
+        <div class="flex gap-12" style="flex-wrap:wrap;">
+          <div class="form-group" style="flex:1;min-width:140px;">
+            <label class="form-label">Nombre completo</label>
+            <input id="new-user-nombre" class="form-input" placeholder="Ej: Juan Pérez">
+          </div>
+          <div class="form-group" style="flex:1;min-width:120px;">
+            <label class="form-label">Usuario</label>
+            <input id="new-user-usuario" class="form-input" placeholder="juanp">
+          </div>
+          <div class="form-group" style="flex:1;min-width:100px;">
+            <label class="form-label">PIN</label>
+            <input id="new-user-pin" class="form-input" type="password" placeholder="••••" maxlength="8">
+          </div>
+          <div class="form-group" style="flex:1;min-width:140px;">
+            <label class="form-label">Rol</label>
+            <select id="nu-rol" class="form-input">
+              <option value="cajero">Cajero</option>
+              <option value="disenador">Diseñador</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label class="form-label">Local</label>
+            <select id="new-user-local" class="form-select">
+              <option value="">Seleccionar...</option>
+              ${locSelect}
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="crearUsuario()">+ Crear Cajero</button>
+      </div>
+      <div class="section-header">
+        <div class="section-title">Cajeros activos</div>
+        <button class="btn btn-secondary btn-sm" onclick="recargarTabUsuarios()">↻ Actualizar</button>
+      </div>
+      <div id="lista-usuarios">${renderTablaUsuarios(usuarios, locales)}</div>
+    `;
+  } catch(e) {
+    el.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function recargarTabUsuarios() {
+  delete document.getElementById('tab-usuarios').dataset.loaded;
+  loadTabUsuarios();
+  document.getElementById('tab-usuarios').dataset.loaded = '1';
+}
+
+function renderTablaUsuarios(usuarios, locales) {
+  if (!usuarios.length) return `<div class="empty"><div class="empty-icon">👤</div>Sin cajeros aún</div>`;
+  return `
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Nombre</th><th>Usuario</th><th>Local</th><th>Acciones</th></tr></thead>
+        <tbody>
+          ${usuarios.map(u => `
+            <tr>
+              <td>${u.nombre}</td>
+              <td class="mono">${u.usuario}</td>
+              <td>${u.localNombre}</td>
+              <td>
+                <div class="flex gap-8">
+                  <button class="btn btn-sm btn-secondary" onclick="showAsignaciones('${u.id}', '${u.nombre}')">Recursos</button>
+                  <button class="btn btn-sm btn-secondary" onclick="showCambiarPinUsuario('${u.id}', '${u.nombre}')" title="Cambiar PIN">🔑</button>
+                  <button class="btn-icon" onclick="eliminarUsuario('${u.id}')" title="Eliminar">✕</button>
+                </div>
+              </td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+function showCambiarPinUsuario(usuarioId, usuarioNombre) {
+  showModal(`Cambiar PIN — ${usuarioNombre}`, `
+    <div id="alert-modal"></div>
+    <p class="text-muted text-sm mb-16">Como administrador puedes cambiar el PIN sin necesidad del PIN actual.</p>
+    <div class="form-group">
+      <label class="form-label">Nuevo PIN</label>
+      <input id="pin-nuevo-admin" class="form-input" type="password" placeholder="mínimo 4 dígitos" maxlength="8" inputmode="numeric">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Confirmar nuevo PIN</label>
+      <input id="pin-confirmar-admin" class="form-input" type="password" placeholder="repetir PIN" maxlength="8" inputmode="numeric">
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-save-pin-admin" class="btn btn-primary" onclick="doGuardarPinAdmin('${usuarioId}', '${usuarioNombre}')">Guardar PIN</button>
+  `);
+}
+
+async function doGuardarPinAdmin(usuarioId, usuarioNombre) {
+  const nuevo     = document.getElementById('pin-nuevo-admin').value.trim();
+  const confirmar = document.getElementById('pin-confirmar-admin').value.trim();
+  if (!nuevo || !confirmar) { showAlert('Completa ambos campos', 'error', 'alert-modal'); return; }
+  if (nuevo !== confirmar) { showAlert('Los PINs no coinciden', 'error', 'alert-modal'); return; }
+  if (nuevo.length < 4) { showAlert('El PIN debe tener al menos 4 dígitos', 'error', 'alert-modal'); return; }
+  setLoading('btn-save-pin-admin', true);
+  try {
+    const res = await call('cambiarPin', App.token, usuarioId, nuevo);
+    if (!res.ok) throw new Error(res.error);
+    closeModal();
+    showAlert(`✅ PIN de ${usuarioNombre} actualizado correctamente`, 'success', 'alert-usuarios');
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-save-pin-admin', false, 'Guardar PIN');
+  }
+}
+
+async function crearUsuario() {
+  const nombre  = document.getElementById('new-user-nombre').value.trim();
+  const usuario = document.getElementById('new-user-usuario').value.trim();
+  const pin     = document.getElementById('new-user-pin').value.trim();
+  const localId = document.getElementById('new-user-local').value;
+  const rol = document.getElementById('nu-rol')?.value || 'cajero';
+  if (!nombre || !usuario || !pin) { showAlert('Completa nombre, usuario y PIN', 'error', 'alert-usuarios'); return; }
+  if (rol === 'cajero' && !localId) { showAlert('Selecciona un local para el cajero', 'error', 'alert-usuarios'); return; }
+  try {
+    const res = await call('crearUsuario', App.token, { nombre, usuario, pin, localId, rol });
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-usuarios').dataset.loaded;
+    loadTabUsuarios();
+    document.getElementById('tab-usuarios').dataset.loaded = '1';
+  } catch(e) { showAlert(e.message, 'error', 'alert-usuarios'); }
+}
+
+async function eliminarUsuario(id) {
+  if (!confirm('¿Eliminar este cajero?')) return;
+  try {
+    const res = await call('eliminarUsuario', App.token, id);
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-usuarios').dataset.loaded;
+    loadTabUsuarios();
+    document.getElementById('tab-usuarios').dataset.loaded = '1';
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── ASIGNACIONES MODAL ──
+async function showAsignaciones(usuarioId, usuarioNombre) {
+  showModal(`Recursos — ${usuarioNombre}`, `<div class="loading"><div class="spinner"></div></div>`, '');
+  try {
+    const [asigRes, todosRes] = await Promise.all([
+      call('obtenerRecursosDeUsuario', App.token, usuarioId),
+      call('obtenerRecursos', App.token)
+    ]);
+    const asignados = asigRes.recursos || [];
+    const todos = todosRes.recursos || [];
+    const asignadosIds = asignados.map(r => r.id);
+
+    const lista = todos.map(r => {
+      const tiene = asignadosIds.includes(r.id);
+      return `
+        <div class="resource-row" id="asig-row-${r.id}" style="flex-direction:column;align-items:stretch;gap:8px;">
+          <div style="display:flex;align-items:center;justify-content:space-between;cursor:pointer;"
+            onclick="toggleAsignacion('${usuarioId}','${r.id}','${r.nombre}',${tiene})">
+            <div class="resource-name">
+              <span class="resource-type-dot ${getDotClass(r.tipo)}"></span>
+              ${r.nombre}
+              <span class="text-muted text-sm">(${r.tipo})</span>
+            </div>
+            <span id="badge-${r.id}" class="${tiene ? 'badge badge-open' : 'badge badge-closed'}">
+              ${tiene ? 'Asignado' : 'Sin asignar'}
+            </span>
+          </div>
+          <div id="cupo-row-${r.id}" style="display:${tiene ? 'flex' : 'none'};align-items:center;gap:8px;padding-top:4px;border-top:1px solid var(--border);">
+            <label style="font-size:11px;color:var(--text-3);white-space:nowrap;">Cupo inicial ($)</label>
+            <input id="cupo-${r.id}" class="resource-input" type="number" step="0.01" min="0" placeholder="0.00"
+              style="width:120px;" data-recurso-id="${r.id}" data-recurso-nombre="${r.nombre}">
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    const modalBody = document.querySelector('.modal');
+    const bodyDiv = modalBody.querySelectorAll('div')[1];
+    bodyDiv.innerHTML = lista || '<div class="empty">Sin recursos creados</div>';
+    bodyDiv.innerHTML += `<div id="alert-modal" style="margin-top:12px;"></div>`;
+    document.querySelector('.modal-footer').innerHTML = `
+      <button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>
+      <button id="btn-guardar-asig" class="btn btn-primary" onclick="guardarCuposAsignados('${usuarioId}')">Guardar cupos</button>
+    `;
+  } catch(e) {
+    const b = document.querySelector('.modal');
+    if (b) b.querySelector('div').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+async function toggleAsignacion(usuarioId, recursoId, recursoNombre, tieneAhora) {
+  try {
+    const badge = document.getElementById(`badge-${recursoId}`);
+    const cupoRow = document.getElementById(`cupo-row-${recursoId}`);
+    if (tieneAhora) {
+      const res = await call('quitarAsignacion', App.token, usuarioId, recursoId);
+      if (!res.ok) throw new Error(res.error);
+      badge.className = 'badge badge-closed';
+      badge.textContent = 'Sin asignar';
+      if (cupoRow) cupoRow.style.display = 'none';
+      const row = document.getElementById(`asig-row-${recursoId}`);
+      row.querySelector('[onclick]').setAttribute('onclick', `toggleAsignacion('${usuarioId}','${recursoId}','${recursoNombre}',false)`);
+    } else {
+      const res = await call('asignarRecurso', App.token, usuarioId, recursoId);
+      if (!res.ok) throw new Error(res.error);
+      badge.className = 'badge badge-open';
+      badge.textContent = 'Asignado';
+      if (cupoRow) cupoRow.style.display = 'flex';
+      const row = document.getElementById(`asig-row-${recursoId}`);
+      row.querySelector('[onclick]').setAttribute('onclick', `toggleAsignacion('${usuarioId}','${recursoId}','${recursoNombre}',true)`);
+    }
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+async function guardarCuposAsignados(usuarioId) {
+  const inputs = document.querySelectorAll('[id^="cupo-"]');
+  const cupos = [];
+  inputs.forEach(inp => {
+    const cupoRow = document.getElementById(`cupo-row-${inp.dataset.recursoId}`);
+    if (cupoRow && cupoRow.style.display !== 'none') {
+      const val = parseFloat(inp.value);
+      if (!isNaN(val) && val > 0) {
+        cupos.push({ recursoId: inp.dataset.recursoId, recursoNombre: inp.dataset.recursoNombre, cupo: val });
+      }
+    }
+  });
+  if (!cupos.length) { closeModal(); return; }
+  setLoading('btn-guardar-asig', true);
+  try {
+    const res = await call('registrarCuposIniciales', App.token, usuarioId, cupos);
+    if (!res.ok) throw new Error(res.error);
+    closeModal();
+    showAlert(`✅ Cupos iniciales guardados correctamente`, 'success', 'alert-usuarios');
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-guardar-asig', false, 'Guardar cupos');
+  }
+}
+
+// ── TAB LOCALES ──
+async function loadTabLocales() {
+  const el = document.getElementById('tab-locales');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const res = await call('obtenerLocales', App.token);
+    const locales = res.locales || [];
+    el.innerHTML = `
+      <div class="card mb-16">
+        <div class="card-header"><div class="card-title">Crear Local</div></div>
+        <div id="alert-locales"></div>
+        <div class="flex gap-12" style="flex-wrap:wrap;">
+          <div class="form-group" style="flex:2;min-width:160px;">
+            <label class="form-label">Nombre del local</label>
+            <input id="new-local-nombre" class="form-input" placeholder="Ej: Sucursal Norte">
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="crearLocal()">+ Crear Local</button>
+      </div>
+      <div class="section-header"><div class="section-title">Locales activos</div></div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Nombre</th><th>ID</th><th></th></tr></thead>
+          <tbody>
+            ${locales.map(l => `
+              <tr>
+                <td><strong>${l.nombre}</strong></td>
+                <td class="mono text-muted">${l.id}</td>
+                <td><button class="btn-icon" onclick="eliminarLocal('${l.id}')" title="Eliminar">✕</button></td>
+              </tr>
+            `).join('')}
+            ${!locales.length ? `<tr><td colspan="3"><div class="empty">Sin locales</div></td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function crearLocal() {
+  const nombre = document.getElementById('new-local-nombre').value.trim();
+  if (!nombre) { showAlert('Ingresa el nombre', 'error', 'alert-locales'); return; }
+  try {
+    const res = await call('crearLocal', App.token, nombre);
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-locales').dataset.loaded;
+    loadTabLocales();
+    document.getElementById('tab-locales').dataset.loaded = '1';
+  } catch(e) { showAlert(e.message, 'error', 'alert-locales'); }
+}
+
+async function eliminarLocal(id) {
+  if (!confirm('¿Eliminar este local?')) return;
+  try {
+    const res = await call('eliminarLocal', App.token, id);
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-locales').dataset.loaded;
+    loadTabLocales();
+    document.getElementById('tab-locales').dataset.loaded = '1';
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── TAB RECURSOS ──
+async function loadTabRecursos() {
+  const el = document.getElementById('tab-recursos');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const res = await call('obtenerRecursos', App.token);
+    const recursos = res.recursos || [];
+    el.innerHTML = `
+      <div class="card mb-16">
+        <div class="card-header"><div class="card-title">Crear Recurso</div></div>
+        <div id="alert-recursos"></div>
+        <div class="flex gap-12" style="flex-wrap:wrap;">
+          <div class="form-group" style="flex:2;min-width:160px;">
+            <label class="form-label">Nombre del recurso</label>
+            <input id="new-rec-nombre" class="form-input" placeholder="Ej: Banco Guayaquil">
+          </div>
+          <div class="form-group" style="flex:1;min-width:120px;">
+            <label class="form-label">Tipo</label>
+            <select id="new-rec-tipo" class="form-select">
+              <option value="efectivo">Efectivo</option>
+              <option value="banco">Banco</option>
+              <option value="venta">Venta / App</option>
+              <option value="otros">Otros</option>
+            </select>
+          </div>
+        </div>
+        <button class="btn btn-primary" onclick="crearRecurso()">+ Crear Recurso</button>
+      </div>
+      <div class="section-header"><div class="section-title">Recursos activos</div></div>
+      <div class="table-wrapper">
+        <table>
+          <thead><tr><th>Nombre</th><th>Tipo</th><th></th></tr></thead>
+          <tbody>
+            ${recursos.map(r => `
+              <tr>
+                <td>
+                  <div class="flex items-center gap-8">
+                    <span class="resource-type-dot ${getDotClass(r.tipo)}"></span>
+                    <strong>${r.nombre}</strong>
+                  </div>
+                </td>
+                <td><span class="badge badge-closed">${r.tipo}</span></td>
+                <td><button class="btn-icon" onclick="eliminarRecurso('${r.id}')" title="Eliminar">✕</button></td>
+              </tr>
+            `).join('')}
+            ${!recursos.length ? `<tr><td colspan="3"><div class="empty">Sin recursos</div></td></tr>` : ''}
+          </tbody>
+        </table>
+      </div>
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function crearRecurso() {
+  const nombre = document.getElementById('new-rec-nombre').value.trim();
+  const tipo   = document.getElementById('new-rec-tipo').value;
+  if (!nombre) { showAlert('Ingresa el nombre', 'error', 'alert-recursos'); return; }
+  try {
+    const res = await call('crearRecurso', App.token, nombre, tipo);
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-recursos').dataset.loaded;
+    loadTabRecursos();
+    document.getElementById('tab-recursos').dataset.loaded = '1';
+  } catch(e) { showAlert(e.message, 'error', 'alert-recursos'); }
+}
+
+async function eliminarRecurso(id) {
+  if (!confirm('¿Eliminar este recurso?')) return;
+  try {
+    const res = await call('eliminarRecurso', App.token, id);
+    if (!res.ok) throw new Error(res.error);
+    delete document.getElementById('tab-recursos').dataset.loaded;
+    loadTabRecursos();
+    document.getElementById('tab-recursos').dataset.loaded = '1';
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ── TAB CIERRE QUINCENAL ──
+async function loadTabCierre() {
+  const el = document.getElementById('tab-cierre');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const res = await call('obtenerResumenCierreQuincenal', App.token);
+    if (!res.ok) throw new Error(res.error);
+    const { periodo, fechaInicio, fechaFin, resumen } = res;
+
+    const usuariosHTML = resumen.map(u => {
+      const detalleHTML = u.detalle.map(d => `
+        <div class="cierre-row">
+          <span class="cierre-label">
+            <span class="resource-type-dot ${getDotClass(d.recursoNombre)}" style="margin-right:6px;"></span>
+            ${d.recursoNombre}
+          </span>
+          <span class="cierre-val flex gap-12">
+            <span class="text-muted">Saldo actual: ${formatMoney(d.saldoActual)}</span>
+            <span>${formatMoneyColored(d.gananciaTotal)}</span>
+            <input class="resource-input" type="number" step="0.01" placeholder="${d.saldoActual}"
+              id="verif_${u.usuarioId}_${d.recursoId}"
+              data-usuario-id="${u.usuarioId}" data-recurso-id="${d.recursoId}"
+              data-recurso-nombre="${d.recursoNombre}" style="width:110px;" value="${d.saldoActual}">
+          </span>
+        </div>
+      `).join('');
+      const totalGanancia = u.detalle.reduce((a, d) => a + d.gananciaTotal, 0);
+      return `
+        <div class="card mb-16">
+          <div class="card-header">
+            <div>
+              <div class="card-title">${u.usuarioNombre}</div>
+              <div class="text-muted text-sm">${u.localNombre}</div>
+            </div>
+            <div class="text-right">
+              <div class="stat-value accent" style="font-size:18px;">${formatMoney(totalGanancia)}</div>
+              <div class="text-muted text-sm">ganancia periodo</div>
+            </div>
+          </div>
+          <div class="cierre-result">${detalleHTML || '<div class="empty">Sin movimientos en este periodo</div>'}</div>
+        </div>
+      `;
+    }).join('');
+
+    const totalGlobal = resumen.reduce((a, u) => a + u.detalle.reduce((b, d) => b + d.gananciaTotal, 0), 0);
+
+    el.innerHTML = `
+      <div class="quincenal-header">
+        <div class="quincenal-icon">📊</div>
+        <div>
+          <div class="quincenal-title">Cierre Quincenal — ${periodo}</div>
+          <div class="quincenal-sub">${fechaInicio} al ${fechaFin}</div>
+        </div>
+      </div>
+      <div class="stats-grid mb-16">
+        <div class="stat-card purple">
+          <div class="stat-label">Ganancia global del periodo</div>
+          <div class="stat-value">${formatMoney(totalGlobal)}</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Cajeros en el periodo</div>
+          <div class="stat-value">${resumen.length}</div>
+        </div>
+      </div>
+      <div class="alert alert-warn mb-16">
+        ⚠️ Verifica y ajusta los saldos actuales de cada cajero antes de confirmar el cierre.
+      </div>
+      <div id="alert-cierre"></div>
+      ${usuariosHTML || '<div class="empty">Sin cajeros con movimientos en este periodo</div>'}
+      ${resumen.length ? `
+        <button id="btn-ejecutar-cierre" class="btn btn-warn btn-lg btn-full" onclick="ejecutarCierre()">
+          🔒 Confirmar Cierre del Periodo ${periodo}
+        </button>
+      ` : ''}
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function ejecutarCierre() {
+  if (!confirm(`¿Confirmar el cierre quincenal?\n\nEsta acción archivará las ganancias del periodo.`)) return;
+  const inputs = document.querySelectorAll('[id^="verif_"]');
+  const verificaciones = [];
+  for (const inp of inputs) {
+    const val = parseFloat(inp.value);
+    if (isNaN(val) || val < 0) {
+      showAlert(`Valor inválido para: ${inp.dataset.recursoNombre}`, 'error', 'alert-cierre');
+      return;
+    }
+    verificaciones.push({
+      usuarioId: inp.dataset.usuarioId,
+      recursoId: inp.dataset.recursoId,
+      recursoNombre: inp.dataset.recursoNombre,
+      saldoVerificado: val
+    });
+  }
+  setLoading('btn-ejecutar-cierre', true);
+  try {
+    const res = await call('ejecutarCierreQuincenal', App.token, verificaciones);
+    if (!res.ok) throw new Error(res.error);
+    showAlert(`✅ Cierre del periodo completado correctamente`, 'success', 'alert-cierre');
+    setLoading('btn-ejecutar-cierre', false, `🔒 Cerrar periodo`);
+    delete document.getElementById('tab-cierre').dataset.loaded;
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-cierre');
+    setLoading('btn-ejecutar-cierre', false, `🔒 Confirmar Cierre`);
+  }
+}
+
+// ── TAB HISTORIAL ──
+async function loadTabHistorial() {
+  const el = document.getElementById('tab-historial');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const [usRes, histRes] = await Promise.all([
+      call('obtenerUsuarios', App.token),
+      call('obtenerDetalleRegistros', App.token, {})
+    ]);
+    const usuarios = usRes.usuarios || [];
+    const registros = histRes.registros || [];
+    const userSelect = usuarios.map(u => `<option value="${u.id}">${u.nombre}</option>`).join('');
+
+    el.innerHTML = `
+      <div class="card mb-16">
+        <div class="card-header"><div class="card-title">Filtrar registros</div></div>
+        <div class="flex gap-12" style="flex-wrap:wrap;">
+          <div class="form-group" style="flex:1;min-width:120px;">
+            <label class="form-label">Cajero</label>
+            <select id="filtro-usuario" class="form-select">
+              <option value="">Todos</option>
+              ${userSelect}
+            </select>
+          </div>
+          <div class="form-group" style="flex:1;min-width:120px;">
+            <label class="form-label">Fecha</label>
+            <input id="filtro-fecha" class="form-input" type="date">
+          </div>
+          <div class="form-group" style="flex:1;min-width:120px;">
+            <label class="form-label">Tipo</label>
+            <select id="filtro-tipo" class="form-select">
+              <option value="">Todos</option>
+              <option value="apertura">Apertura</option>
+              <option value="cierre">Cierre</option>
+            </select>
+          </div>
+          <div style="display:flex;align-items:flex-end;">
+            <button class="btn btn-primary" onclick="filtrarHistorial()">Buscar</button>
+          </div>
+        </div>
+      </div>
+      <div id="tabla-historial">${renderTablaHistorial(registros)}</div>
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function filtrarHistorial() {
+  const usuarioId = document.getElementById('filtro-usuario').value;
+  const fecha     = document.getElementById('filtro-fecha').value;
+  const tipo      = document.getElementById('filtro-tipo').value;
+  document.getElementById('tabla-historial').innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const res = await call('obtenerDetalleRegistros', App.token, {
+      usuarioId: usuarioId || null,
+      fecha: fecha || null,
+      tipo: tipo || null
+    });
+    document.getElementById('tabla-historial').innerHTML = renderTablaHistorial(res.registros || []);
+  } catch(e) {
+    document.getElementById('tabla-historial').innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+function renderTablaHistorial(registros) {
+  if (!registros.length) return `<div class="empty"><div class="empty-icon">📋</div>Sin registros</div>`;
+  return `
+    <div class="table-wrapper">
+      <table>
+        <thead><tr><th>Fecha</th><th>Cajero</th><th>Recurso</th><th>Tipo</th><th>Valor</th><th>Ganancia</th><th>Periodo</th></tr></thead>
+        <tbody>
+          ${registros.map(r => `
+            <tr>
+              <td>${r.fecha}</td>
+              <td>${r.usuarioNombre}</td>
+              <td>${r.recursoNombre}</td>
+              <td><span class="badge ${r.tipo === 'apertura' ? 'badge-pending' : 'badge-closed'}">${r.tipo}</span></td>
+              <td class="mono">${formatMoney(r.valor)}</td>
+              <td class="mono">${r.tipo === 'cierre' ? formatMoneyColored(r.ganancia) : '—'}</td>
+              <td><span class="badge badge-closed">${r.periodo}</span></td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>
+    </div>
+  `;
+}
+
+// ============================================================
+// GESTOR DE TAREAS — ADMIN (con 7 MEJORAS)
+// ============================================================
+
+const ESTADOS_TAREA = {
+  cotizacion: { label: 'Cotización', color: '#f5a623' },
+  en_proceso: { label: 'En Proceso', color: '#7c6af8' },
+  terminado:  { label: 'Terminado',  color: '#00b892' },
+  entregado:  { label: 'Entregado',  color: '#2a9d8f' }
+};
+
+// MEJORA #7: Helper para calcular alerta de fecha
+function getAlertaEntrega(fechaEntrega, estado) {
+  if (!fechaEntrega || estado === 'entregado') return null;
+  const hoy = new Date();
+  hoy.setHours(0,0,0,0);
+  const entrega = new Date(fechaEntrega);
+  entrega.setHours(0,0,0,0);
+  const diffDias = Math.ceil((entrega - hoy) / (1000 * 60 * 60 * 24));
+  
+  if (diffDias < 0) return { tipo: 'vencida', texto: `Vencida hace ${Math.abs(diffDias)} día(s)`, clase: 'tarea-vencida' };
+  if (diffDias === 0) return { tipo: 'hoy', texto: '¡Entrega HOY!', clase: 'tarea-hoy' };
+  if (diffDias <= 3) return { tipo: 'proxima', texto: `Faltan ${diffDias} día(s)`, clase: 'tarea-proxima' };
+  return null;
+}
+
+async function loadTabTareas() {
+  const el = document.getElementById('tab-tareas');
+  el.innerHTML = `<div class="loading"><div class="spinner"></div></div>`;
+  try {
+    const res = await call('obtenerTareas', App.token, {});
+    if (!res || !res.ok) throw new Error(res?.error || 'Error cargando tareas');
+    App.tareasCache = res.tareas;
+    App.tareasFiltro = '';
+    renderTareasAdmin(el, res.tareas);
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+// MEJORA #4: Filtrar tareas por búsqueda
+function filtrarTareasBusqueda() {
+  const query = document.getElementById('tareas-busqueda')?.value.toLowerCase().trim() || '';
+  App.tareasFiltro = query;
+  const el = document.getElementById('tab-tareas');
+  if (!query) {
+    renderTareasAdmin(el, App.tareasCache);
+    return;
+  }
+  const filtradas = App.tareasCache.filter(t => 
+    t.titulo.toLowerCase().includes(query) ||
+    t.cliente.toLowerCase().includes(query) ||
+    (t.creadoPorNombre || '').toLowerCase().includes(query) ||
+    (t.descripcion || '').toLowerCase().includes(query)
+  );
+  renderTareasAdmin(el, filtradas, true);
+}
+
+function limpiarBusquedaTareas() {
+  const input = document.getElementById('tareas-busqueda');
+  if (input) input.value = '';
+  App.tareasFiltro = '';
+  renderTareasAdmin(document.getElementById('tab-tareas'), App.tareasCache);
+}
+
+function renderTareasAdmin(el, tareas, esFiltrado = false) {
+  const totalPorEstado = {};
+  Object.keys(ESTADOS_TAREA).forEach(e => totalPorEstado[e] = 0);
+  tareas.forEach(t => { if (totalPorEstado[t.estado] !== undefined) totalPorEstado[t.estado]++; });
+
+  // MEJORA #3: Kanban con Drag & Drop
+  const kanbanCols = Object.entries(ESTADOS_TAREA).map(([estado, cfg]) => {
+    const tareasCol = tareas.filter(t => t.estado === estado);
+    const cards = tareasCol.map(t => {
+      // MEJORA #7: Alerta de fecha
+      const alerta = getAlertaEntrega(t.fechaEntrega, t.estado);
+      const alertaHTML = alerta ? `<div class="tc-alerta ${alerta.clase}">${alerta.texto}</div>` : '';
+      
+      // MEJORA #2: Mostrar creador
+      const creadorHTML = t.creadoPorNombre ? `<div class="tc-creador">Creado por: ${t.creadoPorNombre}</div>` : '';
+      
+      return `
+        <div class="task-card-gs" 
+             draggable="true" 
+             data-tarea-id="${t.id}"
+             ondragstart="handleDragStart(event)"
+             ondragend="handleDragEnd(event)"
+             onclick="verDetalleTarea('${t.id}')">
+          <div class="tc-header">
+            <span class="tc-titulo">${t.titulo}</span>
+            ${App.user.rol === 'admin' ? `
+              <div class="tc-actions" onclick="event.stopPropagation()">
+                <button class="btn-icon" onclick="showCambiarEstadoTarea('${t.id}','${t.estado}')" title="Cambiar estado">✎</button>
+                <button class="btn-icon" onclick="showPagosTarea('${t.id}','${t.titulo}')" title="Pagos">$</button>
+                <button class="btn-icon" onclick="eliminarTareaUI('${t.id}')" title="Eliminar">✕</button>
+              </div>
+            ` : ''}
+          </div>
+          <div class="tc-cliente">👤 ${t.cliente}</div>
+          ${t.fechaEntrega ? `<div class="tc-fecha">📅 ${t.fechaEntrega}</div>` : ''}
+          ${alertaHTML}
+          ${creadorHTML}
+          <div class="tc-money">
+            <span class="tc-precio">${formatMoney(t.precio)}</span>
+            <span class="tc-saldo ${t.saldo > 0 ? 'tc-pendiente' : 'tc-pagado'}">
+              ${t.saldo > 0 ? `Debe ${formatMoney(t.saldo)}` : '✅ Pagado'}
+            </span>
+          </div>
+        </div>
+      `;
+    }).join('');
+
+    return `
+      <div class="kanban-col-gs" 
+           data-estado="${estado}"
+           ondragover="handleDragOver(event)"
+           ondragleave="handleDragLeave(event)"
+           ondrop="handleDrop(event)">
+        <div class="kanban-col-header" style="border-top:3px solid ${cfg.color}">
+          <span>${cfg.label}</span>
+          <span class="kanban-count">${tareasCol.length}</span>
+        </div>
+        ${cards || `<div class="empty" style="padding:20px;font-size:12px;">Sin tareas</div>`}
+      </div>
+    `;
+  }).join('');
+
+  // MEJORA #4: Input de búsqueda
+  el.innerHTML = `
+    <div class="section-header mb-16">
+      <div>
+        <div class="section-title">Gestor de Tareas</div>
+        <div class="section-sub">${tareas.length} tareas ${esFiltrado ? '(filtradas)' : 'en total'}</div>
+      </div>
+      <div style="display:flex;gap:8px;align-items:center;">
+        <div style="position:relative;">
+          <input id="tareas-busqueda" class="form-input" type="text" placeholder="🔍 Buscar tarea..."
+                 style="width:200px;" value="${App.tareasFiltro}" oninput="filtrarTareasBusqueda()">
+          ${App.tareasFiltro ? `<button class="btn-icon" style="position:absolute;right:8px;top:50%;transform:translateY(-50%);" 
+                                        onclick="limpiarBusquedaTareas()">✕</button>` : ''}
+        </div>
+        <button class="btn btn-secondary btn-sm" onclick="reloadTabTareas()">↻</button>
+        <button class="btn btn-primary" onclick="showNuevaTarea()">+ Nueva Tarea</button>
+      </div>
+    </div>
+    <div id="alert-tareas"></div>
+    <div class="kanban-gs">${kanbanCols}</div>
+  `;
+}
+
+function reloadTabTareas() {
+  delete document.getElementById('tab-tareas').dataset.loaded;
+  loadTabTareas();
+  document.getElementById('tab-tareas').dataset.loaded = '1';
+}
+
+// MEJORA #3: Funciones Drag & Drop
+function handleDragStart(e) {
+  e.target.classList.add('dragging');
+  e.dataTransfer.setData('text/plain', e.target.dataset.tareaId);
+  e.dataTransfer.effectAllowed = 'move';
+}
+
+function handleDragEnd(e) {
+  e.target.classList.remove('dragging');
+  document.querySelectorAll('.kanban-col-gs').forEach(col => {
+    col.classList.remove('drop-zone-active', 'drop-zone-hover');
+  });
+}
+
+function handleDragOver(e) {
+  e.preventDefault();
+  e.dataTransfer.dropEffect = 'move';
+  const col = e.currentTarget;
+  col.classList.add('drop-zone-active', 'drop-zone-hover');
+}
+
+function handleDragLeave(e) {
+  e.currentTarget.classList.remove('drop-zone-hover');
+}
+
+async function handleDrop(e) {
+  e.preventDefault();
+  const col = e.currentTarget;
+  col.classList.remove('drop-zone-active', 'drop-zone-hover');
+  
+  const tareaId = e.dataTransfer.getData('text/plain');
+  const nuevoEstado = col.dataset.estado;
+  
+  if (!tareaId || !nuevoEstado) return;
+  
+  // Actualizar visualmente primero (optimistic update)
+  const card = document.querySelector(`[data-tarea-id="${tareaId}"]`);
+  if (card) {
+    col.appendChild(card);
+    card.classList.remove('dragging');
+  }
+  
+  // Llamar al backend
+  try {
+    const res = await call('moverTarea', App.token, tareaId, nuevoEstado);
+    if (!res || !res.ok) {
+      // Revertir si falla
+      showAlert(res?.error || 'Error al mover tarea', 'error', 'alert-tareas');
+      reloadTabTareas();
+    } else {
+      // Actualizar cache
+      const tarea = App.tareasCache.find(t => t.id === tareaId);
+      if (tarea) tarea.estado = nuevoEstado;
+      // Actualizar contadores
+      document.querySelectorAll('.kanban-col-gs').forEach(c => {
+        const estado = c.dataset.estado;
+        const count = c.querySelectorAll('.task-card-gs').length;
+        const countEl = c.querySelector('.kanban-count');
+        if (countEl) countEl.textContent = count;
+      });
+    }
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-tareas');
+    reloadTabTareas();
+  }
+}
+
+// ── NUEVA TAREA MODAL — MEJORA #5: Abono inicial ──
+function showNuevaTarea() {
+  showModal('Nueva Tarea', `
+    <div id="alert-modal"></div>
+    <div class="form-group">
+      <label class="form-label">Título *</label>
+      <input id="tarea-titulo" class="form-input" placeholder="Ej: Diseño de logo">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Cliente *</label>
+      <input id="tarea-cliente" class="form-input" placeholder="Nombre del cliente">
+    </div>
+    <div class="flex gap-12">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Precio ($)</label>
+        <input id="tarea-precio" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Abono inicial ($)</label>
+        <input id="tarea-abono" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Fecha de entrega</label>
+      <input id="tarea-fecha" class="form-input" type="date">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Descripción</label>
+      <textarea id="tarea-desc" class="form-input" rows="3" placeholder="Detalles del trabajo..."></textarea>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-save-tarea" class="btn btn-primary" onclick="doCrearTarea()">Crear Tarea</button>
+  `);
+}
+
+async function doCrearTarea() {
+  const titulo = document.getElementById('tarea-titulo')?.value.trim();
+  const cliente = document.getElementById('tarea-cliente')?.value.trim();
+  const precio = document.getElementById('tarea-precio')?.value;
+  const abono = document.getElementById('tarea-abono')?.value;
+  const fecha = document.getElementById('tarea-fecha')?.value;
+  const desc = document.getElementById('tarea-desc')?.value.trim();
+
+  if (!titulo || !cliente) {
+    showAlert('Título y cliente son obligatorios', 'error', 'alert-modal');
+    return;
+  }
+
+  setLoading('btn-save-tarea', true);
+  try {
+    const res = await call('crearTarea', App.token, {
+      titulo, cliente,
+      precio: parseFloat(precio) || 0,
+      abonoInicial: parseFloat(abono) || 0,
+      fechaEntrega: fecha || '',
+      descripcion: desc || ''
+    });
+    if (!res || !res.ok) throw new Error(res?.error || 'Error creando tarea');
+    closeModal();
+    reloadTabTareas();
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-save-tarea', false, 'Crear Tarea');
+  }
+}
+
+// ── CAMBIAR ESTADO ──
+function showCambiarEstadoTarea(tareaId, estadoActual) {
+  const esAdmin = App.user.rol === 'admin';
+  const options = Object.entries(ESTADOS_TAREA)
+    .filter(([e]) => esAdmin || e === 'cotizacion' || e === 'en_proceso')
+    .map(([e, cfg]) => `
+      <button class="btn ${e === estadoActual ? 'btn-primary' : 'btn-secondary'} w-full mb-8"
+        onclick="doActualizarEstado('${tareaId}','${e}')">
+        ${cfg.label} ${e === estadoActual ? '✓' : ''}
+      </button>
+    `).join('');
+
+  showModal('Cambiar Estado', `<div id="alert-modal"></div>${options}`,
+    `<button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>`);
+}
+
+async function doActualizarEstado(tareaId, nuevoEstado) {
+  try {
+    const res = await call('actualizarEstadoTarea', App.token, tareaId, nuevoEstado);
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    closeModal();
+    reloadTabTareas();
+  } catch(e) { showAlert(e.message, 'error', 'alert-modal'); }
+}
+
+// ── PAGOS DE TAREA ──
+async function showPagosTarea(tareaId, tituloTarea) {
+  showModal(`Pagos — ${tituloTarea}`, `<div class="loading"><div class="spinner"></div></div>`, '');
+  try {
+    const res = await call('obtenerPagosTarea', App.token, tareaId);
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    const pagos = res.pagos || [];
+    const totalPagado = pagos.reduce((a, p) => a + p.monto, 0);
+
+    const listaPagos = pagos.length
+      ? pagos.map(p => `
+          <div class="cierre-row">
+            <span class="cierre-label">${p.fecha} ${p.notas ? '· ' + p.notas : ''}</span>
+            <span class="cierre-val cierre-pos">${formatMoney(p.monto)}</span>
+          </div>
+        `).join('')
+      : `<div class="empty text-sm">Sin pagos aún</div>`;
+
+    const bodyDiv = document.querySelector('.modal div:nth-child(2)');
+    if (bodyDiv) bodyDiv.innerHTML = `
+      <div class="cierre-result mb-16">${listaPagos}
+        <div class="cierre-total">
+          <span class="cierre-total-label">Total pagado</span>
+          <span class="cierre-total-val cierre-pos">${formatMoney(totalPagado)}</span>
+        </div>
+      </div>
+      <div id="alert-modal"></div>
+      <div class="form-group">
+        <label class="form-label">Nuevo pago ($)</label>
+        <input id="pago-monto" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div class="flex gap-12">
+        <div class="form-group" style="flex:1">
+          <label class="form-label">Fecha</label>
+          <input id="pago-fecha" class="form-input" type="date" value="${new Date().toISOString().split('T')[0]}">
+        </div>
+        <div class="form-group" style="flex:1">
+          <label class="form-label">Notas</label>
+          <input id="pago-notas" class="form-input" placeholder="Opcional">
+        </div>
+      </div>
+    `;
+    document.querySelector('.modal-footer').innerHTML = `
+      <button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>
+      <button id="btn-add-pago" class="btn btn-primary" onclick="doAgregarPagoTarea('${tareaId}')">+ Registrar Pago</button>
+    `;
+  } catch(e) {
+    const b = document.querySelector('.modal div:nth-child(2)');
+    if (b) b.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+  }
+}
+
+async function doAgregarPagoTarea(tareaId) {
+  const monto = parseFloat(document.getElementById('pago-monto')?.value);
+  const fecha = document.getElementById('pago-fecha')?.value;
+  const notas = document.getElementById('pago-notas')?.value.trim();
+  if (!monto || monto <= 0) { showAlert('Ingresa un monto válido', 'error', 'alert-modal'); return; }
+  setLoading('btn-add-pago', true);
+  try {
+    const res = await call('agregarPagoTarea', App.token, tareaId, monto, fecha, notas);
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    const titulo = document.querySelector('.modal-title')?.textContent || 'Pagos';
+    closeModal();
+    showPagosTarea(tareaId, titulo.replace('Pagos — ', ''));
+    reloadTabTareas();
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-add-pago', false, '+ Registrar Pago');
+  }
+}
+
+// ── VER DETALLE ──
+async function verDetalleTarea(tareaId) {
+  showModal('Cargando tarea...', '<div class="loading"><div class="spinner"></div></div>', '');
+  try {
+    const res = await call('obtenerTareas', App.token, {});
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    const tarea = res.tareas.find(t => t.id === tareaId);
+    if (!tarea) throw new Error('Tarea no encontrada');
+
+    const esAdmin = App.user.rol === 'admin';
+    const esDisenador = App.user.rol === 'disenador';
+    const estadoCfg = ESTADOS_TAREA[tarea.estado] || { label: tarea.estado, color: '#6b7280' };
+    
+    // MEJORA #7: Alerta en detalle
+    const alerta = getAlertaEntrega(tarea.fechaEntrega, tarea.estado);
+    const alertaHTML = alerta ? `<span class="tc-alerta ${alerta.clase}" style="margin-left:8px;">${alerta.texto}</span>` : '';
+
+    const pagoRow = tarea.cantPagos > 0
+      ? '<div class="cierre-row"><span class="cierre-label">Pagado</span><span class="cierre-val mono cierre-pos">' + formatMoney(tarea.totalPagado) + '</span></div>'
+      : '';
+    const saldoRow = tarea.saldo > 0
+      ? '<div class="cierre-row"><span class="cierre-label">Saldo pendiente</span><span class="cierre-val mono cierre-neg">' + formatMoney(tarea.saldo) + '</span></div>'
+      : '<div class="cierre-row"><span class="cierre-label">Pago</span><span class="cierre-val mono cierre-pos">✅ Pagado</span></div>';
+    const entregadoRow = tarea.fechaEntregado
+      ? '<div class="cierre-row"><span class="cierre-label">Entregado</span><span class="cierre-val text-muted">' + tarea.fechaEntregado + '</span></div>'
+      : '';
+    const fechaRow = tarea.fechaEntrega
+      ? '<span class="text-muted text-sm">📅 Entrega: ' + tarea.fechaEntrega + '</span>'
+      : '';
+    // MEJORA #2: Creador en detalle
+    const creadorRow = tarea.creadoPorNombre
+      ? '<div class="cierre-row"><span class="cierre-label">Creado por</span><span class="cierre-val">' + tarea.creadoPorNombre + '</span></div>'
+      : '';
+
+    const descHTML = tarea.descripcion
+      ? '<div class="card" style="margin-top:12px;"><div class="text-muted text-sm" style="margin-bottom:6px;">📝 Descripción</div><div style="font-size:14px;line-height:1.6;white-space:pre-wrap;">' + tarea.descripcion + '</div></div>'
+      : '<div class="text-muted text-sm" style="margin-top:12px;">Sin descripción registrada</div>';
+
+    const bodyHTML =
+      '<div style="display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;">' +
+        '<span style="padding:4px 12px;border-radius:99px;font-size:12px;font-weight:700;background:' + estadoCfg.color + '20;color:' + estadoCfg.color + ';">' + estadoCfg.label + '</span>' +
+        fechaRow + alertaHTML +
+      '</div>' +
+      '<div class="cierre-result">' +
+        '<div class="cierre-row"><span class="cierre-label">Cliente</span><span class="cierre-val"><strong>' + tarea.cliente + '</strong></span></div>' +
+        '<div class="cierre-row"><span class="cierre-label">Precio</span><span class="cierre-val mono accent">' + formatMoney(tarea.precio) + '</span></div>' +
+        pagoRow + saldoRow + entregadoRow + creadorRow +
+      '</div>' +
+      descHTML +
+      '<div id="alert-modal" style="margin-top:12px;"></div>';
+
+    const bodyDiv = document.querySelector('.modal div:nth-child(2)');
+    if (bodyDiv) bodyDiv.innerHTML = bodyHTML;
+
+    const footerHTML = (esAdmin || esDisenador)
+      ? '<button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>' +
+        (esAdmin ? '<button class="btn btn-secondary" style="margin-left:8px;" onclick="closeModal();showCambiarEstadoTarea(\'' + tarea.id + '\',\'' + tarea.estado + '\')">✎ Estado</button>' +
+        '<button class="btn btn-primary" style="margin-left:8px;" onclick="closeModal();showPagosTarea(\'' + tarea.id + '\',\'' + tarea.titulo.replace(/'/g, "\\'") + '\')">$ Pagos</button>' : '') +
+        (esDisenador ? '<button class="btn btn-primary" style="margin-left:8px;" onclick="closeModal();showDisCambiarEstado(\'' + tarea.id + '\',\'' + tarea.estado + '\')">✎ Estado</button>' : '')
+      : '<button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>';
+
+    const footer = document.querySelector('.modal-footer');
+    if (footer) footer.innerHTML = footerHTML;
+    const titleEl = document.querySelector('.modal-title');
+    if (titleEl) titleEl.textContent = tarea.titulo;
+  } catch(e) {
+    const b = document.querySelector('.modal div:nth-child(2)');
+    if (b) b.innerHTML = '<div class="alert alert-error">' + e.message + '</div>';
+  }
+}
+
+// ── ELIMINAR TAREA ──
+async function eliminarTareaUI(tareaId) {
+  if (!confirm('¿Eliminar esta tarea? Esta acción no se puede deshacer.')) return;
+  try {
+    const res = await call('eliminarTarea', App.token, tareaId);
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    reloadTabTareas();
+  } catch(e) { alert('Error: ' + e.message); }
+}
+
+// ============================================================
+// GESTOR DE TAREAS — CAJERO
+// ============================================================
+
+async function renderTareasCajero() {
+  const pc = document.getElementById('page-content');
+  pc.innerHTML = `
+    <div class="section-header mb-16">
+      <div style="display:flex; align-items:center; gap:12px;">
+        <button class="btn btn-secondary btn-sm" onclick="renderCajeroHome()" title="Volver">← Volver</button>
+        <div>
+          <div class="section-title">Mis Tareas</div>
+          <div class="section-sub">Tareas asignadas a ti</div>
+        </div>
+      </div>
+      <button class="btn btn-primary" onclick="showNuevaTareaFromCajero()">+ Nueva Tarea</button>
+    </div>
+    <div id="alert-tareas-cajero"></div>
+    <div id="tareas-cajero-content"><div class="loading"><div class="spinner"></div></div></div>
+  `;
+  try {
+    const res = await call('obtenerTareas', App.token, {});
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    const tareas = res.tareas || [];
+    const el = document.getElementById('tareas-cajero-content');
+    if (!tareas.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>Sin tareas asignadas</div>';
+      return;
+    }
+    const kanban = Object.entries(ESTADOS_TAREA).map(([estado, cfg]) => {
+      const cols = tareas.filter(t => t.estado === estado);
+      const cards = cols.map(t => {
+        const alerta = getAlertaEntrega(t.fechaEntrega, t.estado);
+        const alertaHTML = alerta ? `<div class="tc-alerta ${alerta.clase}">${alerta.texto}</div>` : '';
+        return `
+          <div class="task-card-gs" onclick="verDetalleTarea('${t.id}')">
+            <div class="tc-header"><span class="tc-titulo">${t.titulo}</span></div>
+            <div class="tc-cliente">👤 ${t.cliente}</div>
+            ${t.fechaEntrega ? '<div class="tc-fecha">📅 '+t.fechaEntrega+'</div>' : ''}
+            ${alertaHTML}
+            <div class="tc-money"><span class="tc-precio">${formatMoney(t.precio)}</span></div>
+          </div>
+        `;
+      }).join('');
+      return '<div class="kanban-col-gs"><div class="kanban-col-header" style="border-top:3px solid '+cfg.color+'"><span>'+cfg.label+'</span><span class="kanban-count">'+cols.length+'</span></div>'
+        + (cards || '<div class="empty" style="padding:16px;font-size:12px;">Sin tareas</div>') + '</div>';
+    }).join('');
+    el.innerHTML = '<div class="kanban-gs">' + kanban + '</div>';
+  } catch(e) {
+    document.getElementById('tareas-cajero-content').innerHTML = '<div class="alert alert-error">' + e.message + '</div>';
+  }
+}
+
+function showNuevaTareaFromCajero() {
+  showModal('Nueva Tarea', `
+    <div id="alert-modal"></div>
+    <div class="form-group">
+      <label class="form-label">Título *</label>
+      <input id="tarea-titulo" class="form-input" placeholder="Ej: Diseño de logo">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Cliente *</label>
+      <input id="tarea-cliente" class="form-input" placeholder="Nombre del cliente">
+    </div>
+    <div class="flex gap-12">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Precio ($)</label>
+        <input id="tarea-precio" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Abono inicial ($)</label>
+        <input id="tarea-abono" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Fecha de entrega</label>
+      <input id="tarea-fecha" class="form-input" type="date">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Descripción</label>
+      <textarea id="tarea-desc" class="form-input" rows="3" placeholder="Detalles..."></textarea>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-save-tarea" class="btn btn-primary" onclick="doCrearTareaCajero()">Crear Tarea</button>
+  `);
+}
+
+async function doCrearTareaCajero() {
+  const titulo = document.getElementById('tarea-titulo')?.value.trim();
+  const cliente = document.getElementById('tarea-cliente')?.value.trim();
+  const precio = document.getElementById('tarea-precio')?.value;
+  const abono = document.getElementById('tarea-abono')?.value;
+  const fecha = document.getElementById('tarea-fecha')?.value;
+  const desc = document.getElementById('tarea-desc')?.value.trim();
+  if (!titulo || !cliente) { showAlert('Título y cliente son obligatorios', 'error', 'alert-modal'); return; }
+  setLoading('btn-save-tarea', true);
+  try {
+    const res = await call('crearTarea', App.token, {
+      titulo, cliente,
+      precio: parseFloat(precio) || 0,
+      abonoInicial: parseFloat(abono) || 0,
+      fechaEntrega: fecha || '',
+      descripcion: desc || ''
+    });
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    closeModal();
+    renderTareasCajero();
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-save-tarea', false, 'Crear Tarea');
+  }
+}
+
+// ============================================================
+// VISTA DISEÑADOR — MEJORA #1: Puede crear tareas
+// ============================================================
+
+async function renderDisenadorHome() {
+  const pc = document.getElementById('page-content');
+  pc.innerHTML = `
+    <div class="periodo-banner">🎨 Panel de Diseño — ${App.user.nombre}</div>
+    <div class="section-header mb-16">
+      <div>
+        <div class="section-title">Mis Tareas</div>
+        <div class="section-sub">Gestión de trabajos de diseño</div>
+      </div>
+      <div style="display:flex;gap:8px;">
+        <button class="btn btn-primary" onclick="showNuevaTareaDisenador()">+ Nueva Tarea</button>
+      </div>
+    </div>
+    <div class="tabs" id="dis-tabs">
+      <button class="tab active" onclick="disTab('tareas')">📋 Tareas Activas</button>
+      <button class="tab" onclick="disTab('archivadas')">📦 Entregadas</button>
+    </div>
+    <div id="dis-tab-content">
+      <div id="dis-tab-tareas"></div>
+      <div id="dis-tab-archivadas" style="display:none;"></div>
+    </div>
+  `;
+  loadDisTareas(false);
+}
+
+function disTab(tab) {
+  document.querySelectorAll('#dis-tabs .tab').forEach(t => t.classList.remove('active'));
+  event.target.classList.add('active');
+  ['tareas','archivadas'].forEach(t => {
+    const el = document.getElementById('dis-tab-'+t);
+    if (el) el.style.display = t === tab ? 'block' : 'none';
+  });
+  const el = document.getElementById('dis-tab-'+tab);
+  if (el && !el.dataset.loaded) { loadDisTareas(tab === 'archivadas'); el.dataset.loaded = '1'; }
+}
+
+async function loadDisTareas(archivadas) {
+  const divId = archivadas ? 'dis-tab-archivadas' : 'dis-tab-tareas';
+  const el = document.getElementById(divId);
+  if (!el) return;
+  el.innerHTML = '<div class="loading"><div class="spinner"></div> Cargando...</div>';
+  try {
+    const res = await call('obtenerTareas', App.token, { archivadas });
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    const tareas = res.tareas || [];
+    if (!tareas.length) {
+      el.innerHTML = '<div class="empty"><div class="empty-icon">📋</div>' + (archivadas ? 'Sin archivadas' : 'Sin tareas activas') + '</div>';
+      return;
+    }
+    const estados = archivadas
+      ? { archivado: { label:'Archivado', color:'#64748b' } }
+      : { cotizacion:{label:'Cotización',color:'#f5a623'}, en_proceso:{label:'En Proceso',color:'#7c6af8'},
+          terminado:{label:'Terminado',color:'#00b892'}, entregado:{label:'Entregado',color:'#2a9d8f'} };
+    
+    const kanban = Object.entries(estados).map(([estado, cfg]) => {
+      const cols = archivadas ? tareas : tareas.filter(t => t.estado === estado);
+      const cards = cols.map(t => {
+        const alerta = getAlertaEntrega(t.fechaEntrega, t.estado);
+        const alertaHTML = alerta ? `<div class="tc-alerta ${alerta.clase}">${alerta.texto}</div>` : '';
+        const creadorHTML = t.creadoPorNombre ? `<div class="tc-creador">Por: ${t.creadoPorNombre}</div>` : '';
+        return `
+          <div class="task-card-gs" style="cursor:pointer;" onclick="verDetalleTarea('${t.id}')">
+            <div class="tc-header">
+              <span class="tc-titulo">${t.titulo}</span>
+              <div class="tc-actions" onclick="event.stopPropagation()">
+                <button class="btn-icon" onclick="showDisCambiarEstado('${t.id}','${t.estado}')" title="Cambiar estado">✎</button>
+              </div>
+            </div>
+            <div class="tc-cliente">👤 ${t.cliente}</div>
+            ${t.fechaEntrega ? '<div class="tc-fecha">📅 '+t.fechaEntrega+'</div>' : ''}
+            ${alertaHTML}
+            ${creadorHTML}
+            <div class="tc-money"><span class="tc-precio">${formatMoney(t.precio)}</span></div>
+            ${t.descripcion ? '<div class="resource-ref mt-8" style="font-size:11px;max-height:40px;overflow:hidden;">'+t.descripcion+'</div>' : ''}
+          </div>
+        `;
+      }).join('');
+      return '<div class="kanban-col-gs"><div class="kanban-col-header" style="border-top:3px solid '+cfg.color+'"><span>'+cfg.label+'</span><span class="kanban-count">'+cols.length+'</span></div>'
+        + (cards || '<div class="empty" style="padding:16px;font-size:12px;">Sin tareas</div>') + '</div>';
+    }).join('');
+    el.innerHTML = '<div id="alert-dis"></div><div class="kanban-gs">'+kanban+'</div>';
+  } catch(e) { el.innerHTML = '<div class="alert alert-error">'+e.message+'</div>'; }
+}
+
+// MEJORA #1: Diseñador puede crear tareas
+function showNuevaTareaDisenador() {
+  showModal('Nueva Tarea', `
+    <div id="alert-modal"></div>
+    <div class="form-group">
+      <label class="form-label">Título *</label>
+      <input id="tarea-titulo" class="form-input" placeholder="Ej: Diseño de logo">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Cliente *</label>
+      <input id="tarea-cliente" class="form-input" placeholder="Nombre del cliente">
+    </div>
+    <div class="flex gap-12">
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Precio ($)</label>
+        <input id="tarea-precio" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+      <div class="form-group" style="flex:1">
+        <label class="form-label">Abono inicial ($)</label>
+        <input id="tarea-abono" class="form-input" type="number" step="0.01" placeholder="0.00">
+      </div>
+    </div>
+    <div class="form-group">
+      <label class="form-label">Fecha de entrega</label>
+      <input id="tarea-fecha" class="form-input" type="date">
+    </div>
+    <div class="form-group">
+      <label class="form-label">Descripción</label>
+      <textarea id="tarea-desc" class="form-input" rows="3" placeholder="Detalles del trabajo..."></textarea>
+    </div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-save-tarea" class="btn btn-primary" onclick="doCrearTareaDisenador()">Crear Tarea</button>
+  `);
+}
+
+async function doCrearTareaDisenador() {
+  const titulo = document.getElementById('tarea-titulo')?.value.trim();
+  const cliente = document.getElementById('tarea-cliente')?.value.trim();
+  const precio = document.getElementById('tarea-precio')?.value;
+  const abono = document.getElementById('tarea-abono')?.value;
+  const fecha = document.getElementById('tarea-fecha')?.value;
+  const desc = document.getElementById('tarea-desc')?.value.trim();
+  if (!titulo || !cliente) { showAlert('Título y cliente son obligatorios', 'error', 'alert-modal'); return; }
+  setLoading('btn-save-tarea', true);
+  try {
+    const res = await call('crearTarea', App.token, {
+      titulo, cliente,
+      precio: parseFloat(precio) || 0,
+      abonoInicial: parseFloat(abono) || 0,
+      fechaEntrega: fecha || '',
+      descripcion: desc || ''
+    });
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    closeModal();
+    ['tareas','archivadas'].forEach(t => { const el = document.getElementById('dis-tab-'+t); if(el) delete el.dataset.loaded; });
+    loadDisTareas(false);
+  } catch(e) {
+    showAlert(e.message, 'error', 'alert-modal');
+    setLoading('btn-save-tarea', false, 'Crear Tarea');
+  }
+}
+
+function showDisCambiarEstado(tareaId, estadoActual) {
+  const labels = {cotizacion:'Cotización',en_proceso:'En Proceso',terminado:'Terminado',entregado:'Entregado'};
+  const opciones = ['cotizacion','en_proceso','terminado','entregado'].map(v => {
+    const cls = v===estadoActual ? 'btn-primary' : 'btn-secondary';
+    const check = v===estadoActual ? ' ✓' : '';
+    return `<button class="btn ${cls} w-full mb-8" onclick="doDisCambiarEstado('${tareaId}','${v}')">${labels[v]}${check}</button>`;
+  }).join('');
+  showModal('Cambiar Estado', '<div id="alert-modal"></div>'+opciones,
+    '<button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>');
+}
+
+async function doDisCambiarEstado(tareaId, nuevoEstado) {
+  try {
+    const res = await call('actualizarEstadoTarea', App.token, tareaId, nuevoEstado);
+    if (!res || !res.ok) throw new Error(res?.error || 'Error');
+    closeModal();
+    ['tareas','archivadas'].forEach(t => { const el = document.getElementById('dis-tab-'+t); if(el) delete el.dataset.loaded; });
+    loadDisTareas(false);
+  } catch(e) { showAlert(e.message, 'error', 'alert-modal'); }
+}
+
+// ============================================================
+// MÓDULO EGRESOS
+// ============================================================
+
+function showRegistrarEgreso() {
+  if (!window._cajeroData) { showAlert('Recarga el panel principal', 'warn', 'alert-box-cajero'); return; }
+  showModal('Registrar Egreso', `
+    <div id="alert-modal"></div>
+    <div class="form-group"><label class="form-label">Monto ($) *</label>
+      <input id="egr-monto" class="form-input" type="number" step="0.01" min="0.01" placeholder="0.00"></div>
+    <div class="form-group"><label class="form-label">Solicitante *</label>
+      <input id="egr-solicitante" class="form-input" placeholder="Nombre de quien solicita"></div>
+    <div class="form-group"><label class="form-label">Concepto *</label>
+      <input id="egr-concepto" class="form-input" placeholder="¿Para qué es?"></div>
+    <div class="form-group"><label class="form-label" style="display:flex;align-items:center;gap:8px;cursor:pointer;">
+      <input type="checkbox" id="egr-esdeuda" style="width:18px;height:18px;">
+      <span>Este egreso es una <strong>deuda</strong> (debe ser devuelto)</span></label></div>
+    <div class="form-group"><label class="form-label">Notas</label>
+      <input id="egr-notas" class="form-input" placeholder="Opcional"></div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-egr" class="btn btn-warn" onclick="doRegistrarEgreso()">Registrar Egreso</button>
+  `);
+}
+
+async function doRegistrarEgreso() {
+  const monto = parseFloat(document.getElementById('egr-monto')?.value);
+  const solicitante = document.getElementById('egr-solicitante')?.value.trim();
+  const concepto = document.getElementById('egr-concepto')?.value.trim();
+  const esDeuda = document.getElementById('egr-esdeuda')?.checked;
+  const notas = document.getElementById('egr-notas')?.value.trim();
+  if (!monto||monto<=0){showAlert('Monto inválido','error','alert-modal');return;}
+  if (!solicitante){showAlert('Ingresa el solicitante','error','alert-modal');return;}
+  if (!concepto){showAlert('Ingresa el concepto','error','alert-modal');return;}
+  setLoading('btn-egr',true);
+  try {
+    const res = await call('registrarEgreso', App.token, {monto,solicitante,concepto,esDeuda,notas});
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    closeModal();
+    showAlert('✅ '+res.msg,'success','alert-box-cajero');
+    renderCajeroHome();
+  } catch(e){showAlert(e.message,'error','alert-modal');setLoading('btn-egr',false,'Registrar Egreso');}
+}
+
+// ============================================================
+// MÓDULO TRANSFERENCIAS
+// ============================================================
+
+async function showRegistrarTransferencia() {
+  if (!window._cajeroData){showAlert('Recarga el panel principal','warn','alert-box-cajero');return;}
+  let localesOpts = '';
+  try {
+    const res = await call('obtenerLocales', App.token);
+    if (res&&res.locales) localesOpts = res.locales.filter(l=>l.id!==App.user.localId).map(l=>'<option value="'+l.id+'">'+l.nombre+'</option>').join('');
+  } catch(e){}
+  showModal('Transferencia entre Locales', `
+    <div id="alert-modal"></div>
+    <div class="form-group"><label class="form-label">Local destino *</label>
+      <select id="trans-dest" class="form-input"><option value="">Seleccionar...</option>${localesOpts}</select></div>
+    <div class="form-group"><label class="form-label">Monto ($) *</label>
+      <input id="trans-monto" class="form-input" type="number" step="0.01" placeholder="0.00"></div>
+    <div class="form-group"><label class="form-label">Motivo *</label>
+      <input id="trans-motivo" class="form-input" placeholder="¿Por qué se transfiere?"></div>
+    <div class="form-group"><label class="form-label">Notas</label>
+      <input id="trans-notas" class="form-input" placeholder="Opcional"></div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-trans" class="btn btn-primary" onclick="doRegistrarTransferencia()">Registrar</button>
+  `);
+}
+
+async function doRegistrarTransferencia() {
+  const localDestinoId = document.getElementById('trans-dest')?.value;
+  const monto = parseFloat(document.getElementById('trans-monto')?.value);
+  const motivo = document.getElementById('trans-motivo')?.value.trim();
+  const notas = document.getElementById('trans-notas')?.value.trim();
+  if (!localDestinoId){showAlert('Selecciona el local destino','error','alert-modal');return;}
+  if (!monto||monto<=0){showAlert('Monto inválido','error','alert-modal');return;}
+  if (!motivo){showAlert('Ingresa el motivo','error','alert-modal');return;}
+  setLoading('btn-trans',true);
+  try {
+    const res = await call('registrarTransferencia', App.token, {localDestinoId,monto,motivo,notas});
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    closeModal();
+    showAlert('✅ '+res.msg,'success','alert-box-cajero');
+    renderCajeroHome();
+  } catch(e){showAlert(e.message,'error','alert-modal');setLoading('btn-trans',false,'Registrar');}
+}
+
+async function showTransferenciasPendientes() {
+  try {
+    const res = await call('obtenerTransferenciasPendientes', App.token);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    const pendientes = res.pendientes||[];
+    if (!pendientes.length){showAlert('Sin transferencias pendientes','info','alert-box-cajero');return;}
+    const lista = pendientes.map(t=>`
+      <div class="cierre-row" style="flex-direction:column;gap:8px;align-items:flex-start;">
+        <div style="display:flex;justify-content:space-between;width:100%;align-items:center;">
+          <div><strong>${formatMoney(t.monto)}</strong> <span class="text-muted text-sm">desde ${t.localOrigen}</span></div>
+          <button class="btn btn-sm btn-primary" onclick="doConfirmarTransferencia('${t.id}')">✅ Confirmar</button>
+        </div>
+        <div class="text-sm text-muted">Motivo: ${t.motivo} · Por: ${t.cajeroOrigen}</div>
+      </div>
+    `).join('');
+    showModal('Transferencias Pendientes','<div id="alert-modal"></div><div class="cierre-result">'+lista+'</div>',
+      '<button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>');
+  } catch(e){showAlert(e.message,'error','alert-box-cajero');}
+}
+
+async function doConfirmarTransferencia(transId) {
+  try {
+    const res = await call('confirmarTransferencia', App.token, transId);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    closeModal();
+    showAlert('✅ Transferencia confirmada','success','alert-box-cajero');
+    renderCajeroHome();
+  } catch(e){showAlert(e.message,'error','alert-modal');}
+}
+
+// ============================================================
+// ADMIN — TAB EGRESOS
+// ============================================================
+
+async function loadTabEgresos() {
+  const el = document.getElementById('tab-egresos');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const res = await call('obtenerPendientesAprobacion', App.token);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    const {egresos,transferencias} = res;
+    const mkEgr = e => `
+      <div class="card mb-16">
+        <div class="section-header">
+          <div>
+            <div class="section-title" style="font-size:14px;">${e.esDeuda?'🔴 DEUDA':'💸 Egreso'} — ${formatMoney(e.monto)}</div>
+            <div class="text-muted text-sm">${e.usuarioNombre} · ${e.fecha} · Local: ${e.localId}</div>
+            <div class="text-sm mt-8">Concepto: <strong>${e.concepto}</strong> · Solicitante: <strong>${e.solicitante}</strong></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-sm btn-primary" onclick="doAprobarEgreso('${e.id}','aprobar')">✅ Aprobar</button>
+            <button class="btn btn-sm btn-secondary" onclick="doAprobarEgreso('${e.id}','rechazar')">❌ Rechazar</button>
+          </div>
+        </div>
+      </div>`;
+    const mkTrans = t => `
+      <div class="card mb-16">
+        <div class="section-header">
+          <div>
+            <div class="section-title" style="font-size:14px;">🔄 Transferencia — ${formatMoney(t.monto)}</div>
+            <div class="text-muted text-sm">${t.localOrigen} → ${t.localDestino} · ${t.fecha}</div>
+            <div class="text-sm mt-8">Motivo: <strong>${t.motivo}</strong></div>
+          </div>
+          <div style="display:flex;gap:8px;">
+            <button class="btn btn-sm btn-primary" onclick="doAprobarTransferencia('${t.id}','aprobar')">✅ Aprobar</button>
+            <button class="btn btn-sm btn-secondary" onclick="doAprobarTransferencia('${t.id}','rechazar')">❌ Rechazar</button>
+          </div>
+        </div>
+      </div>`;
+    const egresosHTML = egresos.map(mkEgr).join('')||'<div class="empty text-sm">Sin egresos pendientes</div>';
+    const transHTML = transferencias.map(mkTrans).join('')||'<div class="empty text-sm">Sin transferencias pendientes</div>';
+    el.innerHTML = `
+      <div class="section-header mb-16"><div class="section-title">⚡ Egresos pendientes de aprobación</div></div>
+      <div id="alert-egresos"></div>
+      ${egresosHTML}
+      <div class="section-header mt-24 mb-16"><div class="section-title">🔄 Transferencias pendientes</div></div>
+      ${transHTML}
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+async function doAprobarEgreso(id, accion) {
+  try {
+    const res = await call(accion==='aprobar'?'aprobarEgreso':'rechazarEgreso', App.token, id);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    showAlert(`✅ Egreso ${accion==='aprobar'?'aprobado':'rechazado'}`,'success','alert-egresos');
+    delete document.getElementById('tab-egresos').dataset.loaded;
+    loadTabEgresos();
+    document.getElementById('tab-egresos').dataset.loaded='1';
+  } catch(e){showAlert(e.message,'error','alert-egresos');}
+}
+
+async function doAprobarTransferencia(id, accion) {
+  try {
+    const res = await call(accion==='aprobar'?'aprobarTransferencia':'rechazarTransferencia', App.token, id);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    showAlert(`✅ Transferencia ${accion==='aprobar'?'aprobada':'rechazada'}`,'success','alert-egresos');
+    delete document.getElementById('tab-egresos').dataset.loaded;
+    loadTabEgresos();
+    document.getElementById('tab-egresos').dataset.loaded='1';
+  } catch(e){showAlert(e.message,'error','alert-egresos');}
+}
+
+// ============================================================
+// ADMIN — TAB TRANSFERENCIAS
+// ============================================================
+
+async function loadTabTransferencias() {
+  const el = document.getElementById('tab-transferencias');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const res = await call('obtenerTransferenciasAdmin', App.token);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    const trans = res.transferencias||[];
+    if (!trans.length) { el.innerHTML = '<div class="empty"><div class="empty-icon">🔄</div>Sin transferencias</div>'; return; }
+    const rows = trans.map(t=>`
+      <tr>
+        <td>${t.fecha}</td>
+        <td>${t.localOrigen}</td>
+        <td>${t.localDestino}</td>
+        <td class="mono accent">${formatMoney(t.monto)}</td>
+        <td>${t.motivo}</td>
+        <td><span class="badge ${t.estado==='confirmada'?'badge-open':t.estado==='pendiente'?'badge-pending':'badge-closed'}">${t.estado}</span></td>
+      </tr>
+    `).join('');
+    el.innerHTML = `
+      <div class="section-header mb-16"><div class="section-title">Historial de Transferencias</div></div>
+      <div class="table-wrapper">
+        <table><thead><tr><th>Fecha</th><th>Origen</th><th>Destino</th><th>Monto</th><th>Motivo</th><th>Estado</th></tr></thead>
+        <tbody>${rows}</tbody></table>
+      </div>
+    `;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+// ============================================================
+// ADMIN — TAB DEUDAS
+// ============================================================
+
+async function loadTabDeudas() {
+  const el = document.getElementById('tab-deudas');
+  el.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
+  try {
+    const res = await call('obtenerDeudas', App.token, 'activas');
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    const deudas = res.deudas||[];
+    const ec = {activa:'#f5a623',parcial:'#7c6af8',saldada:'#00b892'};
+    const cards = deudas.map(d=>{
+      const pct = d.montoTotal>0?Math.round((d.totalAbonado/d.montoTotal)*100):0;
+      return `
+        <div class="card mb-16">
+          <div class="section-header" style="align-items:flex-start;">
+            <div style="flex:1;">
+              <div style="display:flex;align-items:center;gap:8px;">
+                <div class="section-title" style="font-size:14px;">${d.deudorNombre}</div>
+                <span style="padding:2px 8px;border-radius:99px;font-size:11px;font-weight:700;background:${ec[d.estado]}20;color:${ec[d.estado]};">${d.estado.toUpperCase()}</span>
+              </div>
+              <div class="text-muted text-sm">${d.concepto} · ${d.fecha}${d.deudorContacto?' · '+d.deudorContacto:''}${d.fechaVencimiento?' · Vence: '+d.fechaVencimiento:''}</div>
+              <div style="margin-top:10px;">
+                <div style="display:flex;justify-content:space-between;font-size:12px;margin-bottom:4px;">
+                  <span>Abonado: <strong>${formatMoney(d.totalAbonado)}</strong> de ${formatMoney(d.montoTotal)}</span>
+                  <span><strong>${pct}%</strong></span>
+                </div>
+                <div style="height:6px;background:var(--border);border-radius:3px;overflow:hidden;">
+                  <div style="height:100%;width:${pct}%;background:${ec[d.estado]};border-radius:3px;"></div>
+                </div>
+                <div style="margin-top:4px;font-size:13px;font-weight:700;color:${ec[d.estado]};">Saldo: ${formatMoney(d.saldoPendiente)}</div>
+              </div>
+            </div>
+            ${d.estado!=='saldada'?`<button class="btn btn-sm btn-primary" style="margin-left:12px;" onclick="showAbonarDeuda('${d.id}','${d.deudorNombre}',${d.saldoPendiente})">+ Abonar</button>`:''}
+          </div>
+        </div>`;
+    }).join('')||'<div class="empty"><div class="empty-icon">📋</div>Sin deudas activas</div>';
+    el.innerHTML = `
+      <div class="section-header mb-16">
+        <div class="section-title">Registro de Deudas</div>
+        <div style="display:flex;gap:8px;">
+          <button class="btn btn-sm btn-secondary" onclick="showDeudasSaldadas()">Ver saldadas</button>
+          <button class="btn btn-sm btn-primary" onclick="showNuevaDeuda()">+ Nueva Deuda</button>
+        </div>
+      </div>
+      <div id="alert-deudas"></div>${cards}`;
+  } catch(e) { el.innerHTML = `<div class="alert alert-error">${e.message}</div>`; }
+}
+
+function showNuevaDeuda() {
+  showModal('Registrar Deuda', `
+    <div id="alert-modal"></div>
+    <div class="form-group"><label class="form-label">Nombre del deudor *</label><input id="deu-nombre" class="form-input" placeholder="Nombre completo"></div>
+    <div class="form-group"><label class="form-label">Contacto</label><input id="deu-contacto" class="form-input" placeholder="Teléfono o referencia"></div>
+    <div class="form-group"><label class="form-label">Concepto *</label><input id="deu-concepto" class="form-input" placeholder="¿Por qué debe?"></div>
+    <div class="flex gap-12">
+      <div class="form-group" style="flex:1;"><label class="form-label">Monto ($) *</label><input id="deu-monto" class="form-input" type="number" step="0.01" placeholder="0.00"></div>
+      <div class="form-group" style="flex:1;"><label class="form-label">Vencimiento</label><input id="deu-vence" class="form-input" type="date"></div>
+    </div>
+    <div class="form-group"><label class="form-label">Notas</label><input id="deu-notas" class="form-input" placeholder="Opcional"></div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-deu" class="btn btn-primary" onclick="doRegistrarDeuda()">Registrar</button>
+  `);
+}
+
+async function doRegistrarDeuda() {
+  const nombre=document.getElementById('deu-nombre')?.value.trim();
+  const contacto=document.getElementById('deu-contacto')?.value.trim();
+  const concepto=document.getElementById('deu-concepto')?.value.trim();
+  const monto=parseFloat(document.getElementById('deu-monto')?.value);
+  const vence=document.getElementById('deu-vence')?.value;
+  const notas=document.getElementById('deu-notas')?.value.trim();
+  if (!nombre){showAlert('Ingresa el nombre','error','alert-modal');return;}
+  if (!concepto){showAlert('Ingresa el concepto','error','alert-modal');return;}
+  if (!monto||monto<=0){showAlert('Monto inválido','error','alert-modal');return;}
+  setLoading('btn-deu',true);
+  try {
+    const res = await call('registrarDeuda', App.token, {deudorNombre:nombre,deudorContacto:contacto,concepto,monto,fechaVencimiento:vence,notas});
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    closeModal();
+    const el=document.getElementById('tab-deudas');
+    delete el.dataset.loaded; loadTabDeudas(); el.dataset.loaded='1';
+  } catch(e){showAlert(e.message,'error','alert-modal');setLoading('btn-deu',false,'Registrar');}
+}
+
+function showAbonarDeuda(deudaId, nombre, saldoPendiente) {
+  showModal('Abonar — '+nombre, `
+    <div id="alert-modal"></div>
+    <div class="stat-card mb-16"><div class="stat-label">Saldo pendiente</div><div class="stat-value danger">${formatMoney(saldoPendiente)}</div></div>
+    <div class="form-group"><label class="form-label">Monto del abono ($) *</label><input id="ab-monto" class="form-input" type="number" step="0.01" placeholder="0.00"></div>
+    <div class="flex gap-12">
+      <div class="form-group" style="flex:1;"><label class="form-label">Fecha</label><input id="ab-fecha" class="form-input" type="date" value="${new Date().toISOString().split('T')[0]}"></div>
+      <div class="form-group" style="flex:1;"><label class="form-label">Método</label>
+        <select id="ab-metodo" class="form-input"><option value="efectivo">Efectivo</option><option value="transferencia">Transferencia</option><option value="otro">Otro</option></select>
+      </div>
+    </div>
+    <div class="form-group"><label class="form-label">Notas</label><input id="ab-notas" class="form-input" placeholder="Opcional"></div>
+  `, `
+    <button class="btn btn-secondary" onclick="closeModal()">Cancelar</button>
+    <button id="btn-ab" class="btn btn-primary" onclick="doAbonarDeuda('${deudaId}')">Registrar Abono</button>
+  `);
+}
+
+async function doAbonarDeuda(deudaId) {
+  const monto=parseFloat(document.getElementById('ab-monto')?.value);
+  const fecha=document.getElementById('ab-fecha')?.value;
+  const metodo=document.getElementById('ab-metodo')?.value;
+  const notas=document.getElementById('ab-notas')?.value.trim();
+  if (!monto||monto<=0){showAlert('Monto inválido','error','alert-modal');return;}
+  setLoading('btn-ab',true);
+  try {
+    const res = await call('abonarDeuda', App.token, deudaId, monto, fecha, metodo, notas);
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    closeModal();
+    const el=document.getElementById('tab-deudas');
+    delete el.dataset.loaded; loadTabDeudas(); el.dataset.loaded='1';
+  } catch(e){showAlert(e.message,'error','alert-modal');setLoading('btn-ab',false,'Registrar Abono');}
+}
+
+async function showDeudasSaldadas() {
+  try {
+    const res = await call('obtenerDeudas', App.token, 'saldadas');
+    if (!res||!res.ok) throw new Error(res?.error||'Error');
+    const rows = res.deudas.map(d=>'<div class="cierre-row"><span><strong>'+d.deudorNombre+'</strong> — '+d.concepto+'</span><span class="mono accent">'+formatMoney(d.montoTotal)+'</span><span class="text-muted text-sm">'+d.fecha+'</span></div>').join('')||'<div class="empty">Sin saldadas</div>';
+    showModal('Deudas Saldadas','<div class="cierre-result">'+rows+'</div>','<button class="btn btn-secondary" onclick="closeModal()">Cerrar</button>');
+  } catch(e){showAlert(e.message,'error','alert-deudas');}
+}
+
+// ============================================================
+// MODAL
+// ============================================================
+
+function showModal(title, body, footer) {
+  const existing = document.getElementById('modal-backdrop');
+  if (existing) existing.remove();
+
+  const div = document.createElement('div');
+  div.id = 'modal-backdrop';
+  div.className = 'modal-backdrop';
+  div.innerHTML = `
+    <div class="modal">
+      <div class="modal-header">
+        <div class="modal-title">${title}</div>
+        <button class="modal-close" onclick="closeModal()">✕</button>
+      </div>
+      <div>${body}</div>
+      <div class="modal-footer">${footer}</div>
+    </div>
+  `;
+  div.addEventListener('click', e => { if (e.target === div) closeModal(); });
+  document.body.appendChild(div);
+}
+
+function closeModal() {
+  const el = document.getElementById('modal-backdrop');
+  if (el) el.remove();
+}
+</script>
